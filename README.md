@@ -2,6 +2,8 @@
 
 Learn With Stories is an offline-first AI learning portal for Indian government-exam preparation. It converts uploaded PDF, DOCX, TXT, and JSONL material into approved knowledge, retrieves relevant passages, generates a story-based lesson, verifies the lesson against its sources, and tracks learning progress.
 
+New readers can start with [Product overview and simple flow](docs/PRODUCT_OVERVIEW.md) before following the technical setup below.
+
 ## 1. Architecture
 
 | Component | Runs on | Responsibility |
@@ -29,6 +31,7 @@ E:\LearnWithStories\secrets\                   Local API-key file used by Docker
 E:\LearnWithStories\src\story_tutor\           Python application and agent
 E:\LearnWithStories\web\                       Responsive browser portal
 E:\LearnWithStories\web\voice\                 Reusable browser voice services and controller
+E:\LearnWithStories\docs\PRODUCT_OVERVIEW.md   Plain-language product description and user flow
 E:\LearnWithStories\docs\LOCAL_AI_STORY_ARCHITECTURE.md  Adaptive local-LLM design and gap analysis
 E:\LearnWithStories\cloudflare\worker.js       Cloudflare gateway
 E:\LearnWithStories\compose.yaml               Dell Docker service
@@ -303,6 +306,8 @@ Do not continue until both checks succeed.
 
 ### RTX Step 7: Switch the Dell agent from OpenAI to Ollama
 
+This is the only application-side provider switch. Complete RTX Steps 1–6 first.
+
 On the Dell, edit `E:\LearnWithStories\config\settings.json`. Change only the model properties and preserve the remaining configuration:
 
 ```json
@@ -318,6 +323,8 @@ On the Dell, edit `E:\LearnWithStories\config\settings.json`. Change only the mo
 Replace `192.168.1.20` with the actual RTX address. Do not add `/v1` to the Ollama URL.
 
 `model_provider` is the provider-switch flag. No UI flag or Cloudflare change is required. OpenAI keys can remain configured; they are not used while the provider is `ollama`.
+
+If a local `.env` file contains `LLM_PROVIDER`, `LLM_MODEL`, or `LLM_BASE_URL`, those values take precedence over `settings.json`. Update them to the Ollama values or remove them before restarting Docker.
 
 The same settings can be overridden without changing JSON. Docker reads these optional environment variables from the shell or a local `.env` file:
 
@@ -340,6 +347,33 @@ docker compose restart learn-with-stories
 docker compose ps
 Invoke-RestMethod "http://127.0.0.1:8766/api/health"
 ```
+
+The expected response contains:
+
+```json
+{
+  "status": "online",
+  "provider": "ollama",
+  "configured_model": "gemma3:12b"
+}
+```
+
+Also confirm the active configuration without exposing secrets:
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8766/api/config"
+```
+
+If health still reports OpenAI, check for `.env` overrides and recreate the container:
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose up -d --force-recreate learn-with-stories
+Invoke-RestMethod "http://127.0.0.1:8766/api/config"
+Invoke-RestMethod "http://127.0.0.1:8766/api/health"
+```
+
+If health reports that Ollama is offline, repeat RTX Step 6. The Dell must reach `http://<RTX_PC_IP>:11434/api/tags` before the portal can generate a lesson.
 
 ### RTX Step 8: Confirm GPU inference
 
