@@ -25,7 +25,7 @@ The machines communicate through the private home network. Internet access is no
 - Learner preferences, goals, and misconception memory with bounded context selection
 - Verified-lesson caching to avoid repeated generation
 - RTX model health and content-coverage visibility
-- No cloud fallback and no public endpoint
+- Optional Cloudflare Worker gateway for authenticated remote portal access; the Dell database and AI services remain private
 - Hierarchical book indexing: Subject → Book → Section/Chapter → Topic → Sub-topic
 - Searchable topic suggestions with unrestricted manual topic entry
 - Compact, collapsible Knowledge Library with subject/book filters and administrator review
@@ -315,6 +315,70 @@ python -m unittest discover -s tests -v
 The checks cover table-of-contents extraction, misleading running-header rejection, manual-name normalization and deduplication, hierarchy search/filter behavior, legacy-data preservation, administrator locks, and responsive UI contracts.
 
 The application binds to `127.0.0.1` by default, so only the Dell can open it. LAN access from a phone or tablet is intentionally not enabled in this MVP.
+
+## Secure Cloudflare portal and private Dell API setup
+
+The repository includes `wrangler.jsonc` and `cloudflare/worker.js`. Cloudflare Workers VPC lets the Worker call the Dell through an outbound-only private tunnel. The Dell API receives no public hostname, and the browser calls only same-origin `/api/*` URLs on the portal. Workers VPC is currently a beta service and is free on Workers plans during the beta period.
+
+### 1. Keep the Dell service private
+
+Start Learn With Stories normally and verify this address on the Dell:
+
+```text
+http://127.0.0.1:8766/api/health
+```
+
+Docker must continue publishing `127.0.0.1:8766:8766`. Do not change it to `8766:8766` or `0.0.0.0:8766:8766`. Do not create a router port-forwarding rule for port `8766`.
+
+### 2. Create the private Workers VPC tunnel
+
+1. In Cloudflare, open **Workers VPC → Create → Tunnel**.
+2. Create a remotely managed tunnel named `learn-with-stories-dell`.
+3. Choose Windows and copy the service-install command Cloudflare displays.
+4. Run that command once in an Administrator PowerShell window on the Dell. The command contains a private tunnel token; do not store or share it.
+5. Wait until Cloudflare shows the connector as healthy.
+
+The tunnel requires outbound QUIC access on UDP port `7844`. It does not require an inbound Windows Firewall rule or a public IP address.
+
+### 3. Register only the Dell API as a VPC Service
+
+1. Open **Workers VPC → Services → Create VPC Service**.
+2. Name it `learn-with-stories-api`.
+3. Select the `learn-with-stories-dell` tunnel.
+4. Choose HTTP and set the target host to `127.0.0.1` and HTTP port to `8766`.
+5. Save the service and copy its Service ID.
+6. Replace `REPLACE_AFTER_CREATING_VPC_SERVICE` in `wrangler.jsonc` with that Service ID.
+
+Use a VPC Service rather than a broad VPC Network binding. It limits the Worker to this one host and port.
+
+### 4. Deploy the portal Worker from GitHub
+
+1. In **Workers & Pages**, open the existing `learn-with-stories` Worker.
+2. Open **Settings → Builds**, connect `Ankur-Verma09/LearnWithStories`, choose branch `main`, and keep the repository root as the root directory.
+3. Leave the build command empty and use `npx wrangler deploy` as the deploy command.
+4. Confirm that the Worker name remains `learn-with-stories`, matching `wrangler.jsonc`.
+5. Push the reviewed gateway changes to GitHub to trigger the deployment.
+
+The Worker uses the `DELL_API` VPC Service binding. No Dell hostname, API key, Access service token, or cross-origin browser permission is needed.
+
+### 5. Require a login for the public portal
+
+Protect the Worker itself so anonymous visitors cannot use the portal or call the Dell:
+
+1. Open the Worker and select **Settings → Access**.
+2. Select **Protect this Worker behind Access** and protect **All traffic**.
+3. Create an **Allow** policy restricted to your email address or trusted family email addresses.
+4. Do not create an `Allow everyone` or public bypass rule.
+
+### 6. Verify the complete path
+
+1. Open the `workers.dev` portal in a private browser window. Cloudflare must request a login.
+2. After signing in, open `/api/health` on the same portal hostname. It should return the Dell model-health JSON.
+3. Return to the portal and confirm that subjects and books load from the Dell.
+4. Stop Learn With Stories on the Dell. The portal should return `DELL_API_UNAVAILABLE`, not expose an internal error.
+5. Restart the Dell app and confirm that the portal recovers.
+
+If the portal loads but subjects do not, check in this order: Dell app, Cloudflared Windows service, tunnel health, VPC Service target, `DELL_API` binding, and Worker deployment status.
 
 ## First learning test
 
