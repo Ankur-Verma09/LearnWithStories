@@ -1,144 +1,114 @@
 # Learn With Stories
 
-An offline-first AI tutor for Indian government-exam preparation. The application turns approved educational facts into level-adapted teaching stories, verifies the generated lesson, checks recall, and tracks concept mastery.
+Learn With Stories is an offline-first AI learning portal for Indian government-exam preparation. It converts uploaded PDF, DOCX, TXT, and JSONL material into approved knowledge, retrieves relevant passages, generates a story-based lesson, verifies the lesson against its sources, and tracks learning progress.
 
-## System design
+## 1. Architecture
 
-| Machine | Runs |
-|---|---|
-| Dell laptop | This project, local web UI, Python agent, approved sources, retrieval, context memory, lesson cache, SQLite database, recall scoring, and progress tracking |
-| RTX 5070 Ti PC | Ollama and the local generation model only |
+| Component | Runs on | Responsibility |
+|---|---|---|
+| Learn With Stories | Dell laptop | Docker application, portal, document processing, retrieval, learner memory, lesson cache, SQLite database, approvals, and progress |
+| Local AI model | RTX 5070 Ti PC | Ollama and the selected model only |
+| Production portal | Cloudflare | Authenticated public web portal and private routing to the Dell |
 
-The machines communicate through the private home network. Internet access is not needed during normal learning, but both machines must be running to generate a new lesson. Previously verified lessons remain available from the Dell.
-
-## Implemented MVP capabilities
-
-- Responsive local learning UI with Learn, Progress, Knowledge Library, and Setup views
-- Adjustable understanding level from 10 to 28
-- English, Hindi, and Hinglish controls (English is the current acceptance baseline)
-- Two-, five-, and ten-minute lessons
-- Approved-source ingestion and local lexical retrieval
-- Story planning, generation, verification, one repair attempt, and re-verification
-- Publication gate that withholds failed or unsupported lessons
-- Three-question multiple-choice recall check with deterministic scoring
-- Per-concept mastery tracking and progress history
-- Learner preferences, goals, and misconception memory with bounded context selection
-- Verified-lesson caching to avoid repeated generation
-- RTX model health and content-coverage visibility
-- Optional Cloudflare Worker gateway for authenticated remote portal access; the Dell database and AI services remain private
-- Hierarchical book indexing: Subject → Book → Section/Chapter → Topic → Sub-topic
-- Searchable topic suggestions with unrestricted manual topic entry
-- Compact, collapsible Knowledge Library with subject/book filters and administrator review
-- Grounded online examinations for Subject, Topic, and balanced Overall practice
-- Server-authoritative total/question timers, locked submissions, deterministic scoring, analysis, and history
-
-## Project location
+Normal production flow:
 
 ```text
-E:\LearnWithStories
+Browser → Cloudflare Access → Cloudflare Worker → private tunnel → Dell → RTX Ollama
 ```
 
-Important locations:
+The RTX PC does not need this repository, Docker, the books, or the database. It only runs Ollama. Uploaded books and learner data stay on the Dell.
+
+## 2. Important locations
 
 ```text
-config\settings.json              Active Dell configuration
-data\sources\                    Approved JSONL source packs
-data\story_tutor.db               Learner data, cache, progress, and content metadata
-src\story_tutor\                  Agent and local server
-web\                              Browser UI
-src\story_tutor\exams.py         Exam validation, generation, factual gate, and allocation service
-web\exam.js                      Examination workflow and timers
-web\exam.css                     Responsive examination layout
-start-learn-with-stories.cmd      UI launcher
-story-tutor.cmd                   Command-line launcher
+E:\LearnWithStories\config\settings.json       Active application configuration
+E:\LearnWithStories\config\learning_profiles.json  Configurable age and knowledge profiles
+E:\LearnWithStories\data\sources\             Uploaded and approved source material
+E:\LearnWithStories\data\story_tutor.db        Books, approvals, lessons, memory, and progress
+E:\LearnWithStories\secrets\                   Local API-key file used by Docker
+E:\LearnWithStories\src\story_tutor\           Python application and agent
+E:\LearnWithStories\web\                       Responsive browser portal
+E:\LearnWithStories\web\voice\                 Reusable browser voice services and controller
+E:\LearnWithStories\docs\LOCAL_AI_STORY_ARCHITECTURE.md  Adaptive local-LLM design and gap analysis
+E:\LearnWithStories\cloudflare\worker.js       Cloudflare gateway
+E:\LearnWithStories\compose.yaml               Dell Docker service
 ```
 
-## Prerequisites
+Do not commit `config\settings.json`, `data`, `secrets`, `.venv`, or `.wrangler`. They are intentionally ignored by Git.
 
-### Dell laptop
+## 3. Cost and security rules
 
-- Windows 10 or 11
-- Python 3.11 or newer available as `python.exe`
-- Private-network connection to the RTX PC
-- No Python packages are required; the application uses the standard library
+- Ollama and downloaded local models have no API charge. Electricity and normal Internet service still apply.
+- OpenAI API usage is billed separately from a ChatGPT subscription.
+- To prevent model charges, use `"model_provider": "ollama"` and leave `model_api_key` blank.
+- Keep the Cloudflare account on the Free plans and do not enable paid add-ons or accept an upgrade.
+- Never expose Dell port `8766` or Ollama port `11434` through router port forwarding.
+- Never publish API keys, Cloudflare tunnel tokens, `settings.json`, the SQLite database, or uploaded books.
+- Use only API keys that you own. Do not use keys copied from public repositories.
 
-Check Python:
+## 4. First-time Dell setup
+
+Complete these steps in order.
+
+### Step 1: Install prerequisites
+
+Install on the Dell:
+
+1. Git.
+2. Docker Desktop for Windows.
+3. Python 3.11 or newer only if the native Windows fallback or command-line tools will be used.
+
+Enable **Docker Desktop → Settings → General → Start Docker Desktop when you sign in**.
+
+Verify Docker:
 
 ```powershell
-python --version
+docker version
+docker compose version
 ```
 
-The launchers use Python's `-S` mode, which prevents unrelated or broken global site packages from affecting this application.
-
-### RTX 5070 Ti PC
-
-- Current NVIDIA driver
-- Ollama installed
-- The selected local model installed
-- A stable private IP address or reserved DHCP address
-
-## Step 1: Configure the RTX model PC
-
-Open PowerShell on the **RTX PC**.
-
-### 1.1 Check Ollama and installed models
+All commands below must be run from the project directory:
 
 ```powershell
-ollama --version
-ollama list
+Set-Location "E:\LearnWithStories"
 ```
 
-Install the model you intend to use if it is not listed. Use the exact name shown by `ollama list` later in the Dell configuration.
+Running `docker compose` from another directory produces the “no configuration file provided” error.
 
-### 1.2 Allow Ollama to listen on the private LAN
+### Step 2: Create local configuration files
 
-Set the persistent user environment variable:
+If `config\settings.json` does not exist:
 
 ```powershell
-setx OLLAMA_HOST "0.0.0.0:11434"
+Copy-Item ".\config\settings.example.json" ".\config\settings.json"
 ```
 
-Exit Ollama completely from the system tray, sign out and back in if necessary, and start Ollama again. Confirm the listener:
+Create the Docker secret file if it does not exist. An empty file is valid when using Ollama:
 
 ```powershell
-netstat -ano | findstr :11434
+New-Item -ItemType Directory -Path ".\secrets" -Force | Out-Null
+if (-not (Test-Path ".\secrets\openai_api_keys.txt")) {
+    New-Item -ItemType File -Path ".\secrets\openai_api_keys.txt" | Out-Null
+}
 ```
 
-The listener should include `0.0.0.0:11434` or the RTX PC's private IP, not only `127.0.0.1:11434`.
+### Step 3: Select the model provider
 
-### 1.3 Find the RTX PC private IP
+Choose exactly one of the following options.
+
+#### Option A: Temporary OpenAI provider
+
+This option requires a user-owned OpenAI Platform API key and can incur API charges.
+
+Run:
 
 ```powershell
-ipconfig
+& ".\configure-openai-keys.cmd"
 ```
 
-Record the active adapter's IPv4 address, for example `192.168.1.20`. Reserve this address in the router if possible.
+Enter between one and fifty keys that belong to you. Enter `1` when only one key is required. Duplicate keys are removed. Key values are stored outside Git and are never returned to the browser.
 
-### 1.4 Restrict the Windows firewall
-
-Open **PowerShell as Administrator** on the RTX PC. Replace `<DELL_IP>` with the Dell's private IPv4 address:
-
-```powershell
-New-NetFirewallRule `
-  -DisplayName "Ollama from LearnWithStories Dell" `
-  -Direction Inbound `
-  -Action Allow `
-  -Protocol TCP `
-  -LocalPort 11434 `
-  -RemoteAddress <DELL_IP> `
-  -Profile Private
-```
-
-Do not create router port forwarding for port 11434. Do not expose Ollama directly to the internet.
-
-## Temporary setup: OpenAI API
-
-Use this while the RTX model PC is being prepared.
-
-1. Create a project API key in the OpenAI Platform. API usage is billed separately from ChatGPT subscriptions.
-2. Double-click `E:\LearnWithStories\configure-openai-key.cmd`.
-3. Paste the key into the protected Windows prompt. The key is stored as the user-level `OPENAI_API_KEY` environment variable; it is never written to this repository.
-4. Confirm `config\settings.json` contains:
+Confirm these properties in `config\settings.json` while preserving the remaining properties:
 
 ```json
 {
@@ -149,539 +119,576 @@ Use this while the RTX model PC is being prepared.
 }
 ```
 
-5. Close any existing Learn With Stories server window and double-click `start-learn-with-stories.cmd`.
-6. Open `http://127.0.0.1:8766`, select **Setup & health**, and confirm that OpenAI is online.
+The application can move to another configured key after an authentication failure or an explicit insufficient-quota response. It does not rotate keys to evade normal request or token rate limits. A context-window error is retried with a smaller request because changing keys cannot increase a model's context window.
 
-Never paste the API key into `settings.json`, source code, browser JavaScript, Git, or support messages. The application sends only the retrieved evidence and relevant learner context needed for the requested lesson; uploaded source files remain on the Dell. OpenAI requests use the Responses API with `store: false`.
+#### Option B: Private RTX Ollama provider
 
-### Configure multiple user-owned OpenAI keys
+Complete the RTX setup in Section 5, confirm the Dell can reach it, and then switch the Dell configuration as described there. No OpenAI key is required.
 
-Run:
-
-```powershell
-& "E:\LearnWithStories\configure-openai-keys.cmd"
-```
-
-Enter between one and ten API keys that belong to you. Duplicate keys are removed. Native Windows runs load the protected user environment variable; Docker runs load the ACL-restricted `secrets\openai_api_keys.txt` file. Neither the UI nor SQLite stores or displays the key values.
-
-The application moves to the next configured key after an authentication failure or an explicit insufficient-quota response. It does not rotate keys to evade ordinary request/token rate limits. A context-window error is retried once with a smaller input and output budget because changing a key cannot increase a model's context window.
-
-## Docker operation
-
-Docker runs the Dell-side web application, document processor, agent, and SQLite access. The future Ollama model continues to run separately on the RTX PC. `data` is mounted from the E: drive, so books, approvals, learning history, and `story_tutor.db` survive container replacement.
-
-One-time preparation:
+### Step 4: Build and start the Dell application
 
 ```powershell
 Set-Location "E:\LearnWithStories"
-& ".\configure-openai-keys.cmd"
-docker compose build
-```
-
-Start and inspect the application:
-
-```powershell
-docker compose up -d
+docker compose up -d --build
 docker compose ps
-docker compose logs -f learn-with-stories
 ```
 
-Open `http://127.0.0.1:8766`. Stop it with:
+The expected container name is `learn-with-stories`.
+
+Inspect startup errors with:
 
 ```powershell
-docker compose down
+docker compose logs --tail 100 learn-with-stories
 ```
 
-Do not run the native launcher and Docker container simultaneously because both use port `8766` and the same SQLite database. Stop one before starting the other.
+Do not run the native launcher and Docker simultaneously. Both use port `8766` and the same SQLite database.
 
-## Step 2: Configure the Dell application for the future local model
-
-Open this file on the **Dell**:
-
-```text
-E:\LearnWithStories\config\settings.json
-```
-
-Example:
-
-```json
-{
-  "model_provider": "ollama",
-  "model_base_url": "http://192.168.1.20:11434",
-  "model_name": "qwen3.5:9b",
-  "model_api_key": "",
-  "request_timeout_seconds": 180,
-  "database_path": "data/story_tutor.db",
-  "max_evidence_chunks": 5,
-  "max_evidence_tokens": 3000,
-  "max_memory_tokens": 600,
-  "max_session_summary_tokens": 300,
-  "default_understanding_level": 18,
-  "default_language": "English"
-}
-```
-
-Settings:
-
-| Setting | Meaning |
-|---|---|
-| `model_provider` | Use `openai` temporarily or `ollama` for the private RTX model PC. |
-| `model_base_url` | RTX PC private URL. Change the example IP to the actual RTX PC address. |
-| `model_name` | Exact installed model name returned by `ollama list`. |
-| `model_api_key` | Leave blank for direct Ollama. A bearer key requires an authenticated reverse proxy. |
-| `request_timeout_seconds` | Maximum time for one model request. |
-| `database_path` | Dell-side SQLite location, relative to the project root. |
-| `max_evidence_chunks` | Maximum retrieved source chunks per lesson. |
-| `max_evidence_tokens` | Evidence portion of the prompt budget. |
-| `max_memory_tokens` | Maximum learner-memory portion of the prompt. |
-| `max_session_summary_tokens` | Reserved limit for future rolling-session summaries. |
-| `default_understanding_level` | Initial level, from 10 to 28. |
-| `default_language` | Initial UI language. |
-
-## Step 3: Verify the configured provider
-
-From any PowerShell directory on the Dell:
-
-```powershell
-& "E:\LearnWithStories\story-tutor.cmd" health
-```
-
-A successful response lists the configured provider model. With Ollama, if the configured model is not in `available_models`, correct `model_name` or install that model on the RTX PC.
-
-You can also test the endpoint directly:
-
-```powershell
-Invoke-RestMethod "http://<RTX_PC_IP>:11434/api/tags"
-```
-
-## Step 4: Initialize and ingest approved content
-
-Initialize the local database:
-
-```powershell
-& "E:\LearnWithStories\story-tutor.cmd" init
-```
-
-Ingest the included pipeline sample:
-
-```powershell
-& "E:\LearnWithStories\story-tutor.cmd" ingest "examples\sample_polity.jsonl"
-```
-
-The sample exists to exercise the pipeline. Before substantive exam preparation, replace or supplement it with text extracted from verified official editions and complete the source metadata.
-
-Each JSONL line must contain:
-
-```text
-source_id, title, publisher, authority_tier, license_note, edition,
-effective_date, subject, concept, section, text
-```
-
-Re-ingesting the same records is safe; duplicates are skipped.
-
-## Step 5: Run the project
-
-On the Dell, run:
-
-```powershell
-& "E:\LearnWithStories\start-learn-with-stories.cmd"
-```
-
-Keep the terminal open. Then open:
-
-```text
-http://127.0.0.1:8766
-```
-
-Stop the application with `Ctrl+C` in the launcher terminal.
-
-## Book processing and topic review
-
-Upload PDF or DOCX books from **Knowledge library → Add a document**. Searchable PDFs use their table of contents, chapter page ranges, headings, and surrounding text. Every chunk stores its subject, book, section, chapter, topic, optional sub-topic, and source page range. Unreliable names are shown as **Needs review** rather than being assigned the book title.
-
-Subjects and books are collapsed by default. Expand only the branch you need, or search directly across the complete hierarchy. Use **Review** beside a topic or sub-topic to rename and lock the corrected name, approve it, or reject it. Locked administrator corrections are preserved when the book is processed again. Manual topic entry and administrator corrections work even when OpenAI or the RTX model is offline.
-
-To reprocess an existing book after an extraction improvement, use its reprocess action in the Knowledge Library. The workflow keeps the existing source records and approval status, updates automatically extracted names, and does not overwrite administrator-locked names. Back up `data\story_tutor.db` before bulk reprocessing production content.
-
-## Run the automated checks
-
-From `E:\LearnWithStories`:
-
-```powershell
-$env:PYTHONPATH = "$PWD\src"
-python -m unittest discover -s tests -v
-```
-
-The checks cover table-of-contents extraction, misleading running-header rejection, manual-name normalization and deduplication, hierarchy search/filter behavior, legacy-data preservation, administrator locks, and responsive UI contracts.
-
-The application binds to `127.0.0.1` by default, so only the Dell can open it. LAN access from a phone or tablet is intentionally not enabled in this MVP.
-
-## Secure Cloudflare portal and private Dell API setup
-
-The repository includes `wrangler.jsonc` and `cloudflare/worker.js`. Cloudflare Workers VPC lets the Worker call the Dell through an outbound-only private tunnel. The Dell API receives no public hostname, and the browser calls only same-origin `/api/*` URLs on the portal. Workers VPC is currently a beta service and is free on Workers plans during the beta period.
-
-### Zero-charge operating guardrails
-
-This deployment can run without Cloudflare charges when the account remains on **Workers Free** and **Zero Trust Free**:
-
-- Do not upgrade Workers, Pages, or Zero Trust and do not enable paid add-ons.
-- Keep Cloudflare Access below the Free plan's 50-user limit.
-- Static portal assets are served directly and do not invoke the Worker. Only `/api/*` uses the Workers Free allowance of 100,000 requests per day. When that allowance is exhausted, requests fail until the daily reset; the Free plan does not provide paid overage capacity.
-- Workers VPC is free only while it remains in beta. Check Cloudflare's Workers VPC pricing before accepting any future plan or billing change.
-- Cloudflare Tunnel is used only as the private outbound connector; no paid network service is required for this design.
-- Do not enable Workers AI, R2, D1, KV, Durable Objects, Logpush, Argo, paid image optimization, or another usage-based product for this portal.
-
-Cloudflare being free does **not** make OpenAI API usage free. For a strict zero-charge model path, set `model_provider` to `ollama` and point `model_base_url` to the RTX PC. Until the RTX PC is ready, do not generate lessons or examinations while `model_provider` is `openai`; library browsing, manual topic entry, and administrator correction remain available without model calls. Electricity and Internet service used by the Dell and RTX PC remain ordinary household costs.
-
-### 1. Keep the Dell service private
-
-Start Learn With Stories normally and verify this address on the Dell:
-
-```text
-http://127.0.0.1:8766/api/health
-```
-
-Docker must continue publishing `127.0.0.1:8766:8766`. Do not change it to `8766:8766` or `0.0.0.0:8766:8766`. Do not create a router port-forwarding rule for port `8766`.
-
-### 2. Create the private Workers VPC tunnel
-
-1. In Cloudflare, open **Workers VPC → Create → Tunnel**.
-2. Create a remotely managed tunnel named `learn-with-stories-dell`.
-3. Choose Windows and copy the service-install command Cloudflare displays.
-4. Run that command once in an Administrator PowerShell window on the Dell. The command contains a private tunnel token; do not store or share it.
-5. Wait until Cloudflare shows the connector as healthy.
-
-The tunnel requires outbound QUIC access on UDP port `7844`. It does not require an inbound Windows Firewall rule or a public IP address.
-
-### 3. Register only the Dell API as a VPC Service
-
-1. Open **Workers VPC → Services → Create VPC Service**.
-2. Name it `learn-with-stories-api`.
-3. Select the `learn-with-stories-dell` tunnel.
-4. Choose HTTP and set the target host to `127.0.0.1` and HTTP port to `8766`.
-5. Save the service and copy its Service ID.
-6. Replace `REPLACE_AFTER_CREATING_VPC_SERVICE` in `wrangler.jsonc` with that Service ID.
-
-Use a VPC Service rather than a broad VPC Network binding. It limits the Worker to this one host and port.
-
-### 4. Deploy the portal Worker from GitHub
-
-1. In **Workers & Pages**, open the existing `learn-with-stories` Worker.
-2. Open **Settings → Builds**, connect `Ankur-Verma09/LearnWithStories`, choose branch `main`, and keep the repository root as the root directory.
-3. Leave the build command empty and use `npx wrangler deploy` as the deploy command.
-4. Confirm that the Worker name remains `learn-with-stories`, matching `wrangler.jsonc`.
-5. Push the reviewed gateway changes to GitHub to trigger the deployment.
-
-The Worker uses the `DELL_API` VPC Service binding. No Dell hostname, API key, Access service token, or cross-origin browser permission is needed.
-
-### 5. Require a login for the public portal
-
-Protect the Worker itself so anonymous visitors cannot use the portal or call the Dell:
-
-1. Open the Worker and select the separate **Access** tab. Pages projects do not have this Worker-level tab.
-2. Select **Protect this Worker behind Access** and protect **All traffic**.
-3. Create an **Allow** policy restricted to your email address or trusted family email addresses.
-4. Do not create an `Allow everyone` or public bypass rule.
-
-### 6. Verify the complete path
-
-1. Open the `workers.dev` portal in a private browser window. Cloudflare must request a login.
-2. After signing in, open `/api/health` on the same portal hostname. It should return the Dell model-health JSON.
-3. Return to the portal and confirm that subjects and books load from the Dell.
-4. Stop Learn With Stories on the Dell. The portal should return `DELL_API_UNAVAILABLE`, not expose an internal error.
-5. Restart the Dell app and confirm that the portal recovers.
-
-If the portal loads but subjects do not, check in this order: Dell app, Cloudflared Windows service, tunnel health, VPC Service target, `DELL_API` binding, and Worker deployment status.
-
-## Start the complete project after a restart or shutdown
-
-Use **Docker as the normal Dell runtime**. Do not also run `start-learn-with-stories.cmd`, because both methods use port `8766` and the same SQLite database.
-
-### One-time automatic-start settings
-
-1. In Docker Desktop, open **Settings → General**, enable **Start Docker Desktop when you sign in to your computer**, and apply the change.
-2. Confirm that Cloudflare Tunnel is installed as a Windows service. In an Administrator PowerShell window, run:
-
-   ```powershell
-   Get-CimInstance Win32_Service -Filter "Name='cloudflared'" |
-     Select-Object Name, State, StartMode
-   ```
-
-   The expected values are `Running` and `Auto`. If the service exists but is not automatic, run once:
-
-   ```powershell
-   Set-Service -Name cloudflared -StartupType Automatic
-   Start-Service -Name cloudflared
-   ```
-
-3. The Docker service already has `restart: unless-stopped` in `compose.yaml`. It normally returns when Docker Desktop starts, provided the container was not manually stopped. The startup command below is still safe to run after every reboot.
-4. When using the RTX local model, configure the Ollama Windows application to start when that PC signs in. No Ollama or RTX step is required while the application is deliberately using OpenAI, although OpenAI API calls may incur charges.
-
-Do not paste or reinstall the Cloudflare tunnel token after each restart. The installed Windows service retains the tunnel configuration. If a tunnel token was exposed, rotate it in Cloudflare and reinstall the service using only the replacement command shown in the dashboard.
-
-### Normal power-on sequence
-
-#### 1. Start the RTX model PC when using Ollama
-
-1. Power on the RTX PC and connect it to the same private network as the Dell.
-2. Open Ollama from the Windows Start menu if it did not start automatically.
-3. On the RTX PC, verify it:
-
-   ```powershell
-   ollama list
-   Invoke-RestMethod "http://127.0.0.1:11434/api/tags"
-   ```
-
-4. Keep the RTX PC awake while generating lessons or examinations. Library browsing and manual administrator corrections do not require the model.
-
-#### 2. Start the Dell application
-
-1. Power on the Dell, connect it to the Internet, and start Docker Desktop. Wait until Docker Desktop reports that the engine is running.
-2. Open PowerShell and run:
-
-   ```powershell
-   Set-Location "E:\LearnWithStories"
-   docker compose up -d
-   docker compose ps
-   ```
-
-3. `docker compose ps` should show `learn-with-stories` as running or healthy. If this is the first run, or the Docker image must be rebuilt after dependency or Dockerfile changes, use:
-
-   ```powershell
-   docker compose up -d --build
-   ```
-
-#### 3. Verify the Cloudflare Tunnel service
-
-Run on the Dell:
-
-```powershell
-Get-Service -Name cloudflared
-```
-
-If it is stopped, open PowerShell as Administrator and run:
-
-```powershell
-Start-Service -Name cloudflared
-```
-
-The Cloudflare Worker itself is hosted by Cloudflare and does not need to be started or redeployed after a Dell or RTX PC reboot.
-
-#### 4. Verify the complete route
-
-First test the private Dell API locally:
+### Step 5: Verify the local application
 
 ```powershell
 Invoke-RestMethod "http://127.0.0.1:8766/api/health"
 ```
 
-Then open the protected portal:
+Open the local portal:
+
+```text
+http://127.0.0.1:8766
+```
+
+Open **Setup & health** and confirm the configured provider and model are online.
+
+### Step 6: Initialize content
+
+The web server initializes the database automatically. The CLI can also initialize it explicitly:
+
+```powershell
+& ".\story-tutor.cmd" init
+```
+
+Optional sample ingestion:
+
+```powershell
+& ".\story-tutor.cmd" ingest "examples\sample_polity.jsonl"
+```
+
+The sample exercises the pipeline. Use verified and legally authorized editions for real exam preparation.
+
+### Step 7: Upload books
+
+1. Open **Knowledge Library**.
+2. Select **Add a document**.
+3. Select a PDF, DOCX, TXT, or JSONL file.
+4. Enter its subject, book metadata, edition/year, and any useful fallback topic.
+5. Confirm that you are authorized to use the document.
+6. Select **Convert and add to library**.
+7. Wait for the success state before uploading the next book.
+
+Files are stored in:
+
+```text
+Original uploads:    data\sources\uploads
+Generated JSONL:     data\sources\generated
+Indexed information: data\story_tutor.db
+```
+
+Searchable PDFs work directly. Image-only PDFs require OCR first. Modern `.docx` files are supported; legacy `.doc` files must be saved as `.docx`. The default upload limit is controlled by `max_upload_bytes` in `settings.json`.
+
+Duplicate titles, authors, topics, and editions are allowed as separate uploads. Knowledge Library supports filtering, topic review, topic deletion, and complete book deletion.
+
+### Step 8: Verify the learning flow
+
+1. Open **Learn**.
+2. Select a subject.
+3. Optionally search for or manually type a topic/sub-topic.
+4. Enter the specific question.
+5. Select the level, language, and lesson duration.
+6. Generate the lesson.
+7. Complete the recall questions.
+8. Open **Progress** to review mastery.
+
+The subject is required so retrieval remains grounded. The topic is optional; when supplied, retrieval is restricted to that hierarchy. Manual topic entry and administrator corrections remain available even when the model is offline.
+
+## 5. RTX 5070 Ti model-PC setup
+
+Complete this section once after receiving the RTX PC.
+
+### RTX Step 1: Prepare Windows and the GPU
+
+1. Install current Windows updates.
+2. Install the latest NVIDIA driver.
+3. Use a wired private network when possible.
+4. Set the Windows network profile to **Private**.
+5. Prevent automatic sleep while plugged in.
+
+Verify the GPU:
+
+```powershell
+nvidia-smi
+```
+
+### RTX Step 2: Install Ollama and the model
+
+Install Ollama for Windows from `https://ollama.com/download/windows`.
+
+Open a new PowerShell window:
+
+```powershell
+ollama --version
+ollama pull gemma3:12b
+ollama run gemma3:12b "Reply with only: READY"
+```
+
+`gemma3:12b` is the initial local story-generation model. Ollama supplies its supported quantized build; confirm the installed variant and GPU allocation with `ollama show gemma3:12b` and `ollama ps`. Keep larger models out of the initial configuration until their VRAM and latency are measured on the RTX PC.
+
+### RTX Step 3: Allow private Dell access
+
+Run on the RTX PC:
+
+```powershell
+setx OLLAMA_HOST "0.0.0.0:11434"
+setx OLLAMA_CONTEXT_LENGTH "8192"
+setx OLLAMA_NUM_PARALLEL "1"
+setx OLLAMA_MAX_LOADED_MODELS "1"
+```
+
+Quit Ollama completely from the system tray and start it again. Restart Windows if it continues listening only on localhost.
+
+Verify:
+
+```powershell
+reg query HKCU\Environment /v OLLAMA_HOST
+netstat -ano | findstr :11434
+Invoke-RestMethod "http://127.0.0.1:11434/api/tags"
+```
+
+The listener must show `0.0.0.0:11434` or the RTX PC's private address, not only `127.0.0.1:11434`.
+
+### RTX Step 4: Reserve the RTX private IP
+
+```powershell
+ipconfig
+```
+
+Record the active adapter's IPv4 address, for example `192.168.1.20`, and reserve it in the router's DHCP settings.
+
+Run `ipconfig` on the Dell as well and record the Dell's private IPv4 address.
+
+### RTX Step 5: Restrict the firewall to the Dell
+
+Open PowerShell **as Administrator on the RTX PC**. Replace `<DELL_IP>` with the Dell's private address:
+
+```powershell
+New-NetFirewallRule `
+  -DisplayName "Ollama from LearnWithStories Dell only" `
+  -Direction Inbound `
+  -Action Allow `
+  -Protocol TCP `
+  -LocalPort 11434 `
+  -RemoteAddress <DELL_IP> `
+  -Profile Private
+```
+
+Do not create a router port-forward or a Cloudflare Tunnel to Ollama.
+
+### RTX Step 6: Test from the Dell
+
+Replace `<RTX_PC_IP>` with the reserved RTX address:
+
+```powershell
+Test-NetConnection <RTX_PC_IP> -Port 11434
+Invoke-RestMethod "http://<RTX_PC_IP>:11434/api/tags"
+```
+
+Do not continue until both checks succeed.
+
+### RTX Step 7: Switch the Dell agent from OpenAI to Ollama
+
+On the Dell, edit `E:\LearnWithStories\config\settings.json`. Change only the model properties and preserve the remaining configuration:
+
+```json
+{
+  "model_provider": "ollama",
+  "model_base_url": "http://192.168.1.20:11434",
+  "model_name": "gemma3:12b",
+  "model_api_key": "",
+  "request_timeout_seconds": 180
+}
+```
+
+Replace `192.168.1.20` with the actual RTX address. Do not add `/v1` to the Ollama URL.
+
+`model_provider` is the provider-switch flag. No UI flag or Cloudflare change is required. OpenAI keys can remain configured; they are not used while the provider is `ollama`.
+
+The same settings can be overridden without changing JSON. Docker reads these optional environment variables from the shell or a local `.env` file:
+
+| Variable | Example |
+|---|---|
+| `LLM_PROVIDER` | `ollama` |
+| `LLM_MODEL` | `gemma3:12b` |
+| `LLM_BASE_URL` | `http://192.168.1.20:11434` |
+| `LLM_TEMPERATURE` | `0.65` |
+| `LLM_TIMEOUT` | `120` |
+| `LLM_MAX_RETRIES` | `1` |
+
+Do not use `localhost` for `LLM_BASE_URL` when Ollama runs on the separate RTX PC. Use that PC's private LAN address.
+
+Restart the Dell container so it reloads the file:
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose restart learn-with-stories
+docker compose ps
+Invoke-RestMethod "http://127.0.0.1:8766/api/health"
+```
+
+### RTX Step 8: Confirm GPU inference
+
+Generate one lesson from the portal and run on the RTX PC:
+
+```powershell
+ollama ps
+nvidia-smi
+```
+
+`ollama ps` should preferably report `100% GPU` for the model.
+
+After this one-time setup, future Dell restarts do not require another configuration change. Start Ollama on the RTX PC and Docker on the Dell.
+
+## 6. Cloudflare production setup
+
+The production portal is:
 
 ```text
 https://learn-with-stories.aaankurankur.workers.dev
 ```
 
-Sign in through Cloudflare Access and open **Setup & health**. Confirm that the Dell API is online and, when using Ollama, that the configured model is available.
+Cloudflare should expose only the portal. The Dell service remains bound to `127.0.0.1:8766` and is reached through the outbound private tunnel and VPC Service.
 
-### Normal shutdown sequence
+### Cloudflare Step 1: Keep the Dell private
 
-Before shutting down the Dell, optionally stop the application cleanly:
+Keep this mapping in `compose.yaml`:
+
+```yaml
+ports:
+  - "127.0.0.1:8766:8766"
+```
+
+Do not change it to `0.0.0.0:8766` and do not forward router port `8766`.
+
+### Cloudflare Step 2: Install the tunnel service once
+
+1. In Cloudflare, open **Workers VPC → Tunnels**.
+2. Use the `learn-with-stories-dell` remotely managed tunnel.
+3. Copy the Windows service-install command shown by Cloudflare.
+4. Run it once in Administrator PowerShell on the Dell.
+5. Keep the tunnel token private.
+
+The tunnel is outbound-only. Do not reinstall it after each reboot.
+
+Verify the Windows service:
+
+```powershell
+Get-CimInstance Win32_Service -Filter "Name='cloudflared'" |
+  Select-Object Name, State, StartMode
+```
+
+Expected values are `Running` and `Auto`. If necessary, run in Administrator PowerShell:
+
+```powershell
+Set-Service -Name cloudflared -StartupType Automatic
+Start-Service -Name cloudflared
+```
+
+### Cloudflare Step 3: Verify the VPC Service and Worker
+
+The VPC Service must target:
+
+```text
+Host: 127.0.0.1
+Port: 8766
+Protocol: HTTP
+```
+
+`wrangler.jsonc` binds this service as `DELL_API`. The Worker serves the static `web` directory and forwards only `/api/*` to the Dell.
+
+For a GitHub deployment, keep:
+
+```text
+Repository:     Ankur-Verma09/LearnWithStories
+Branch:         main
+Root directory: repository root
+Build command:  empty
+Deploy command: npx wrangler deploy
+```
+
+### Cloudflare Step 4: Require authentication
+
+Protect all Worker traffic with Cloudflare Access and an allow policy restricted to approved email addresses. Do not create an anonymous bypass or `Allow everyone` policy.
+
+### Cloudflare Step 5: Verify production
+
+1. Open the production portal in a private browser window.
+2. Confirm Cloudflare requests a login.
+3. After login, open `/api/health` on the same production hostname.
+4. Confirm subjects and books load.
+5. Confirm internal exceptions, tokens, paths, and source code are not shown by error responses.
+
+The Worker remains deployed when either PC is off. When the Dell is offline, the portal should return the controlled `DELL_API_UNAVAILABLE` message.
+
+## 7. Start everything after a restart or shutdown
+
+Use this sequence every time.
+
+### Startup Step 1: Start the RTX PC when using Ollama
+
+1. Power on the RTX PC.
+2. Connect it to the same private network as the Dell.
+3. Start Ollama if it did not start automatically.
+4. Verify:
+
+```powershell
+ollama list
+Invoke-RestMethod "http://127.0.0.1:11434/api/tags"
+```
+
+Skip this step only while intentionally using OpenAI.
+
+### Startup Step 2: Start the Dell application
+
+1. Start the Dell and Docker Desktop.
+2. Wait for the Docker engine to report that it is running.
+3. Run:
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose up -d
+docker compose ps
+```
+
+Use `docker compose up -d --build` only after application code, Python dependencies, the Dockerfile, or the image configuration changes.
+
+### Startup Step 3: Verify the tunnel
+
+```powershell
+Get-Service -Name cloudflared
+```
+
+If stopped, run Administrator PowerShell:
+
+```powershell
+Start-Service -Name cloudflared
+```
+
+### Startup Step 4: Verify local and production routes
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8766/api/health"
+```
+
+Then open:
+
+```text
+https://learn-with-stories.aaankurankur.workers.dev
+```
+
+No Cloudflare redeployment or tunnel-token installation is required after a normal reboot.
+
+## 8. Normal operation
+
+### Ask a question
+
+1. Select a subject.
+2. Optionally select or manually enter a topic/sub-topic.
+3. Type the specific question, or select the microphone button and speak it.
+4. Set the learner's age.
+5. Select knowledge level: Beginner, Intermediate, or Advanced.
+6. Choose story style, difficulty, language, and duration.
+7. Generate the verified lesson.
+
+When the topic is blank, retrieval searches approved content across the selected subject. When supplied, it filters to that topic hierarchy.
+
+Age and knowledge level are deliberately separate. Age controls vocabulary, relatable settings, sentence style, and appropriate humor. Knowledge level controls prerequisites and technical depth. For example, a 28-year-old beginner receives adult examples with foundational physics, while a knowledgeable 16-year-old can receive deeper technical reasoning in age-appropriate language.
+
+### Voice input and story playback
+
+- Select the microphone beside **Your specific question** to request access and begin listening. Select it again to stop. The recognized text remains editable before lesson generation.
+- Microphone access is requested only after that user action. If access is denied or blocked, enable it in the browser's site settings and reload instead of repeatedly selecting Retry.
+- After a story is generated, use **Play Story**, **Pause**, **Resume**, or **Stop**. Starting another lesson automatically stops the current playback.
+- Current Chrome or Edge releases provide the best compatibility. Voice recognition availability and network use are controlled by the browser; browser speech recognition is not guaranteed to work offline.
+- Voice input and playback use native browser APIs and add no package, model, or API charge. Normal Internet, electricity, OpenAI, and Cloudflare plan considerations still apply.
+
+### Learning preferences and context memory
+
+Users can add and delete teaching preferences, goals, and misconceptions. The model may recommend a short default teaching preference. Duplicate preferences are normalized case-insensitively and with extra spaces removed.
+
+Only relevant bounded learner context and retrieved evidence are sent to the configured model. Context memory reduces repeated prompt content; it does not train the model.
+
+### Knowledge Library review
+
+The hierarchy is:
+
+```text
+Subject → Book → Section/Chapter → Topic → Sub-topic → Approved concepts
+```
+
+Administrators can search, filter, expand/collapse, rename, merge, move, approve, reject, or delete content. Administrator-locked corrections are retained during reprocessing. Unreliable extracted names are marked **Needs review** with their source pages.
+
+### Examinations
+
+1. Open **Examination**.
+2. Choose Subject, Topic, or Overall practice.
+3. Select difficulty, question count, and duration.
+4. Generate the grounded examination.
+5. Start it only when ready; timers begin at that point.
+6. Submit to receive marks and evidence-backed analysis.
+
+## 9. Maintenance commands
+
+### View logs
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose logs --tail 100 learn-with-stories
+```
+
+Follow live logs:
+
+```powershell
+docker compose logs -f learn-with-stories
+```
+
+### Restart after a settings change
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose restart learn-with-stories
+```
+
+### Rebuild after code changes
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose up -d --build
+```
+
+### Deploy web or Worker changes
+
+```powershell
+Set-Location "E:\LearnWithStories"
+npx.cmd wrangler deploy
+```
+
+Deployment is not required after an ordinary PC restart.
+
+### Stop cleanly
 
 ```powershell
 Set-Location "E:\LearnWithStories"
 docker compose stop
 ```
 
-Windows stops the `cloudflared` service during shutdown. The Cloudflare Worker remains deployed but returns the controlled `DELL_API_UNAVAILABLE` response while the Dell is offline. Shut down the RTX PC after active model generation has finished.
+Start it again with `docker compose up -d`. Do not use `docker compose down -v`.
 
-At the next startup, always run `docker compose up -d`; it starts a previously stopped container without deleting the database or uploaded books.
+### Native Windows fallback
 
-### Native Windows fallback without Docker
-
-Use this only when Docker is stopped:
+Use this only while Docker is stopped:
 
 ```powershell
 Set-Location "E:\LearnWithStories"
+& ".\setup-learn-with-stories.cmd"
 & ".\start-learn-with-stories.cmd"
 ```
 
-Keep that terminal window open. Stop the native server with `Ctrl+C`. Before returning to Docker, close the native server and confirm that port `8766` is free.
+Keep the terminal open and stop the native server with `Ctrl+C` before returning to Docker.
 
-### Commands used only after changes
-
-These are not required after an ordinary reboot:
-
-- Run `docker compose up -d --build` after Python dependencies, the Dockerfile, or packaged application code changes.
-- Run `npx.cmd wrangler deploy` after `cloudflare/worker.js`, `wrangler.jsonc`, or files in `web` change and a direct Worker deployment is required.
-- Run `git pull` only when new repository changes need to be downloaded to the Dell.
-- Never run `docker compose down -v`; removing volumes is unnecessary and could delete Docker-managed data. The current project database and uploaded books are bind-mounted under `E:\LearnWithStories\data`.
-
-### Quick recovery checks
-
-| Symptom | Check and recovery |
-|---|---|
-| `docker compose` says no configuration file was found | Run `Set-Location "E:\LearnWithStories"` first. |
-| `http://127.0.0.1:8766` is unreachable | Start Docker Desktop, run `docker compose up -d`, then inspect `docker compose logs --tail 100 learn-with-stories`. |
-| Local `/api/health` works but the portal reports `DELL_API_UNAVAILABLE` | Check `Get-Service cloudflared`, the tunnel health in Cloudflare, and the VPC Service binding. |
-| Portal opens but the model is offline | Start the RTX PC and Ollama, verify its private IP, and test `/api/tags` from the Dell. |
-| Port `8766` is already in use | Stop either the Docker container or the native launcher; never run both. |
-| Cloudflare asks for deployment after a reboot | Do not redeploy for a reboot. Verify the Dell container and `cloudflared` service instead. |
-
-## First learning test
-
-1. Open the **Setup & health** page and confirm that the model PC is online.
-2. Open **Knowledge library** and confirm that `Article 21` is available.
-3. Return to **Learn**.
-4. Enter `Article 21`, select `Polity`, level `15`, and five minutes.
-5. Generate the story.
-6. Complete all three recall questions and submit them.
-7. Open **Progress** to see the mastery score.
-
-## Create and take an examination
-
-1. Open **Examination** in the left navigation.
-2. Enter an exam name and choose Subject, Topic, or Overall.
-3. For Subject, choose one approved subject. For Topic, choose one subject and type or select its topic. For Overall, select at least two subjects.
-4. Choose difficulty, question count, and total time, then select **Generate examination**.
-5. The AI creates questions from approved evidence and a separate factual gate checks the questions and answer keys. A rejected set is not published.
-6. Review the ready summary and select **Start exam**. This is when the total and per-question timers begin.
-7. Answer or skip one question at a time. A timed-out question advances automatically and cannot be changed.
-8. Finish the test to see marks, percentage, time taken, and question-wise evidence-backed analysis.
-9. Reopen a completed result from **Exam history**. Ready and in-progress attempts can also be resumed.
-
-For Overall exams, both the question count and total time are divided as evenly as integer values allow. Any remainder is assigned deterministically to the earliest selected subjects, so totals are never lost.
-
-## Ask a specific question
-
-1. Select a subject. This remains required because every answer must be grounded in an uploaded source.
-2. Optionally choose or type a topic/sub-topic. When supplied, retrieval is strictly limited to chunks assigned to that topic hierarchy.
-3. Enter the specific question you want answered. When topic is blank, the question searches across all approved content in the selected subject.
-4. Generate the verified story lesson.
-
-The specific question is stored with lesson history and participates in the verified-lesson cache key. An unrelated question therefore cannot reuse a lesson cached for another question.
-
-## Learning preferences
-
-Users can add preferences, study goals, and misconceptions from the Learn page. During lesson planning, the model may recommend one short default teaching preference suited to the question; this is saved as a **Model default** without replacing user preferences. Identical recommendations are deduplicated.
-
-Every stored preference has a Delete option in the Learn and Setup views. Deleted preferences are removed from local SQLite immediately and are no longer included in future model context.
-
-## Command-line operation
-
-The UI and CLI use the same agent and database:
+### Command-line tools
 
 ```powershell
 $tutor = "E:\LearnWithStories\story-tutor.cmd"
 
 & $tutor health
 & $tutor ingest "examples\sample_polity.jsonl"
-& $tutor remember "I understand household and civic examples best." --kind preference --subject Polity
+& $tutor remember "I understand civic examples best." --kind preference --subject Polity
 & $tutor lesson "Article 21" --subject Polity --level 15 --minutes 5
 & $tutor history
 & $tutor progress
 & $tutor content
 ```
 
-Add `--refresh` to `lesson` to bypass a cached verified lesson.
+Use `--refresh` with `lesson` to bypass a cached verified lesson.
 
-## Backup and privacy
+### Automated checks
 
-All learner data is stored on the Dell in:
+```powershell
+Set-Location "E:\LearnWithStories"
+$env:PYTHONPATH = "$PWD\src"
+python -m unittest discover -s tests -v
+```
+
+## 10. Backup and restoration
+
+The active database is:
 
 ```text
 E:\LearnWithStories\data\story_tutor.db
 ```
 
-Before copying the database, stop the application so SQLite can close its WAL files. Back up the database and approved source folder together. Encrypt backups that leave the Dell.
+Before copying it:
 
-Do not store passwords, financial details, health information, or other unnecessary sensitive information as learner memories.
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose stop
+```
 
-## Troubleshooting
+Back up together:
 
-### `No module named story_tutor`
+- `data\story_tutor.db`
+- `data\sources`
+- `config\settings.json`
 
-Use the supplied `.cmd` launchers with their full E-drive paths. They set the project root and Python path automatically.
+Do not back up `secrets` to an unencrypted or shared location. Start the application again with `docker compose up -d`.
 
-### `_distutils_hack` or `distutils-precedence.pth` error
+## 11. Troubleshooting
 
-The supplied launchers use `python -S`, which bypasses the broken global site-package hook. Do not replace the launcher with a bare `python -m story_tutor` command unless your Python installation is repaired and `PYTHONPATH` is set correctly.
+| Problem | Resolution |
+|---|---|
+| `docker compose` reports no configuration file | Run `Set-Location "E:\LearnWithStories"` first. |
+| Local portal is unreachable | Start Docker Desktop, run `docker compose up -d`, and inspect the last 100 container log lines. |
+| “Older server is still running” or port `8766` is occupied | Stop the native launcher or Docker container. Never run both. |
+| Local health works but production reports `DELL_API_UNAVAILABLE` | Check the `cloudflared` Windows service, Cloudflare tunnel health, VPC Service, binding, and deployment. |
+| Ollama is offline | Verify both PCs are on the same network, the RTX IP is unchanged, Ollama is listening on the LAN, and the firewall allows the Dell IP. |
+| Ollama model is unavailable | Run `ollama list` on the RTX PC and copy the exact name into `settings.json`, then restart the Dell container. |
+| OpenAI key is invalid | Run `configure-openai-keys.cmd` with a newly copied user-owned Platform key, then restart. ChatGPT subscriptions do not include API usage. |
+| OpenAI quota or billing error | Add valid API billing/credits or switch `model_provider` to `ollama`. |
+| PDF upload fails | Check container logs, file size, PDF searchability, and free space under `E:\LearnWithStories\data`. |
+| SQLite disk I/O error in Docker | Confirm `E:\LearnWithStories\data` is writable and shared with Docker Desktop; do not run native and Docker instances together. |
+| Topic has no approved evidence | Upload or approve relevant content under the matching subject/topic hierarchy. |
+| Microphone is blocked or denied | Open the browser's site permissions for the portal, allow Microphone, reload the page, and select the microphone again. |
+| Voice input is unavailable | Use a current Chrome or Edge release over HTTPS or localhost, confirm Windows detects the microphone, and type the question as a fallback. |
+| Voice input reports a network error | The browser's recognition service may require Internet access. Retry when connected or type the question. |
+| Story playback does not start | Select **Play Story** directly, confirm the tab/site is allowed to play audio, check the Windows output device, and retry. |
 
-### Model PC shows offline
-
-Check, in order:
-
-1. Both machines are connected to the same private network.
-2. The RTX PC address in `settings.json` is correct.
-3. Ollama is running on the RTX PC.
-4. `netstat -ano | findstr :11434` shows a LAN listener.
-5. The Windows firewall rule contains the Dell's current private IP.
-6. `Invoke-RestMethod "http://<RTX_PC_IP>:11434/api/tags"` works from the Dell.
-
-### Configured model is unavailable
-
-Run `ollama list` on the RTX PC and copy the exact model name into `settings.json`. Restart the Dell application after changing settings.
-
-For OpenAI, run `configure-openai-key.cmd`, confirm that the API project has billing/model access, and restart the application. Do not put the key into `settings.json`.
-
-### OpenAI says the API key is invalid
-
-ChatGPT subscriptions and ChatGPT login/session tokens are not API keys. Create a new project API key at `https://platform.openai.com/api-keys`, then:
-
-1. Close every Learn With Stories server window.
-2. Use the dashboard's **Copy** button and paste directly into `configure-openai-key.cmd`. Do not route the key through chat, Word, Google Docs, translated pages, or formatted text. The configurator rejects non-ASCII/look-alike characters, removes accidental quotes or a leading `Bearer` label, and verifies that Windows persisted the exact value.
-3. Run `start-learn-with-stories.cmd` again. The launcher deliberately ignores stale keys inherited from old terminals and loads the saved user-level key.
-4. Open **Setup & health** and select **Check again**.
-
-If authentication succeeds but generation reports quota or billing errors, add API credits or billing details in the OpenAI Platform; a ChatGPT subscription does not include API usage.
-
-### Topic needs approved evidence
-
-The publication gate is working as intended. Add an approved JSONL source chunk whose `subject` and `concept` match the requested lesson, ingest it, and try again.
-
-### Port 8766 is already in use
-
-Close the older Learn With Stories terminal with `Ctrl+C`. Then start the application again.
-
-## Current boundaries
-
-- English is the verified baseline; Hindi and Hinglish require their own content and quality evaluation.
-- Retrieval is lexical in this MVP; embeddings are not required for the first validated learning loop.
-- One learner and one generation request at a time.
-- No voice conversation, automatic web/current-affairs ingestion, or public hosting. OpenAI is an explicit temporary provider; Ollama remains the intended private local provider.
-- The automated suite includes domain and static contracts for the examination module. Runtime browser, model-quality, timer-drift, and load verification remain separate acceptance activities.
-# Document upload and automatic conversion
-
-The Knowledge library now accepts PDF, DOCX, TXT, and JSONL files. PDF and Word documents are converted to validated JSONL automatically and then indexed; this is retrieval-based learning material, not model training or fine-tuning.
-
-Before the first run, double-click `setup-learn-with-stories.cmd`. This creates a private Python environment and installs PDF reading support. Then double-click `start-learn-with-stories.cmd` for normal use and open `http://127.0.0.1:8766`.
-
-In the application:
-
-1. Open **Knowledge library**.
-2. Choose a document and enter its subject.
-3. Optionally enter a default topic when the document has weak or missing headings.
-4. Confirm that you are authorized to use the document, then select **Convert and add to library**.
-5. Wait for the green success message. The document appears under **Uploaded books**, and its subject/topics immediately appear on the Learn screen. The upload form resets so another book can be selected immediately.
-
-The Uploaded books section can be filtered independently by book title and author/publisher. Expand a book to search its topic list or delete one topic from that book. **Delete book** removes the selected upload and its indexed topics; matching topics from other books remain available.
-
-Duplicate files, titles, authors, and topics are allowed. Every upload is stored as a separate source, so different editions or publication years remain independently manageable. Enter the edition or year while uploading to distinguish them clearly.
-
-Searchable PDFs work directly. Image-only scanned PDFs must first be processed with OCR and saved as a searchable PDF. Modern Word `.docx` files are supported; legacy `.doc` files must be saved as `.docx`. The default upload limit is 150 MB and can be changed with `max_upload_bytes` in `config/settings.json`.
-
-Upload locations:
-
-- Original files: `data/sources/uploads`
-- Automatically generated JSONL: `data/sources/generated`
-- Indexed application data: `data/story_tutor.db`
-
-
-To stop a process listening on port 8766, run this in PowerShell:
+To identify the process using port `8766` without stopping it:
 
 ```powershell
 Get-NetTCPConnection -LocalPort 8766 -State Listen |
-  Select-Object -ExpandProperty OwningProcess -Unique |
-  ForEach-Object { Stop-Process -Id $_ -Force }
+  Select-Object LocalAddress, LocalPort, OwningProcess
 ```
 
-Never place API keys in this README or any repository file. Configure only user-owned keys through `configure-openai-keys.cmd`.
+Stop it only after confirming that it is an obsolete Learn With Stories process:
+
+```powershell
+Stop-Process -Id <PROCESS_ID>
+```
+
+## 12. Current boundaries
+
+- English is the verified baseline; Hindi and Hinglish require additional content-quality evaluation.
+- Retrieval is lexical in the current MVP.
+- One learner and one generation request at a time.
+- The books support retrieval-augmented generation; uploading a book does not train or fine-tune the model.
+- No router ports should be opened for this application.
+- Speech recognition and available synthesis voices vary by browser, operating system, language pack, and device. Native recognition may use a browser-provider service rather than the Dell or RTX model.
+- The current RAG retriever is lexical. The provider, prompt, and validation boundaries are ready for a future embedding/vector-store implementation without changing lesson orchestration.
+- Live Gemma quality, GPU memory, time-to-first-token, and end-to-end latency require verification on the RTX 5070 Ti PC.
+- Browser runtime, model-quality, timer-drift, and load validation remain separate from the automated Python and static contract checks.

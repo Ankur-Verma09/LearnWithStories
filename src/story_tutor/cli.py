@@ -36,6 +36,10 @@ def parser() -> argparse.ArgumentParser:
     lesson.add_argument("concept")
     lesson.add_argument("--subject", default="Polity")
     lesson.add_argument("--level", type=int)
+    lesson.add_argument("--age", type=int, help="Learner age; --level remains a backward-compatible alias")
+    lesson.add_argument("--knowledge-level", choices=["beginner", "intermediate", "advanced"])
+    lesson.add_argument("--story-style", choices=["realistic_funny", "realistic", "conversational"])
+    lesson.add_argument("--difficulty", choices=["easy", "standard", "challenging"])
     lesson.add_argument("--language")
     lesson.add_argument("--minutes", type=int, default=5, choices=[2, 5, 10])
     lesson.add_argument("--refresh", action="store_true")
@@ -83,9 +87,15 @@ def main() -> None:
         elif args.command == "content":
             print(json.dumps(database.content_inventory(), indent=2))
         elif args.command == "lesson":
-            level = args.level or settings.default_understanding_level
+            level = args.age or args.level or settings.default_learner_age
             language = args.language or settings.default_language
-            result = StoryTutorAgent(settings).create_lesson(args.subject, args.concept, level, language, args.minutes, args.refresh, question=args.concept)
+            result = StoryTutorAgent(settings).create_lesson(
+                args.subject, args.concept, level, language, args.minutes, args.refresh,
+                question=args.concept, age=level,
+                knowledge_level=args.knowledge_level or settings.default_knowledge_level,
+                story_style=args.story_style or settings.default_story_style,
+                difficulty=args.difficulty or settings.default_difficulty,
+            )
             print(json.dumps(result, indent=2, ensure_ascii=False))
             if result["status"] != "PASS":
                 raise SystemExit(2)

@@ -137,9 +137,13 @@ class TutorWebApplication:
                 path = parsed_url.path
                 if path == "/api/config":
                     self.send_json(HTTPStatus.OK, {
-                        "api_version": 4,
-                        "features": ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "online_examinations"],
-                        "default_level": application.settings.default_understanding_level,
+                        "api_version": 5,
+                        "features": ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "online_examinations", "adaptive_learning_profiles"],
+                        "default_level": application.settings.default_learner_age,
+                        "default_learner_age": application.settings.default_learner_age,
+                        "default_knowledge_level": application.settings.default_knowledge_level,
+                        "default_story_style": application.settings.default_story_style,
+                        "default_difficulty": application.settings.default_difficulty,
                         "default_language": application.settings.default_language,
                         "model_provider": application.settings.model_provider,
                         "model_name": application.settings.model_name,
@@ -168,7 +172,10 @@ class TutorWebApplication:
                     self.send_json(HTTPStatus.OK, {
                         "lesson_id": row["id"], "subject": row["subject"], "concept": row["concept"],
                         "question": row["question"],
-                        "level": row["understanding_level"], "language": row["language"], "status": row["status"],
+                        "level": row["learner_age"], "age": row["learner_age"],
+                        "knowledge_level": row["knowledge_level"], "learning_profile": row["learning_profile"],
+                        "story_style": row["story_style"], "difficulty": row["difficulty"],
+                        "language": row["language"], "status": row["status"],
                         "created_at": row["created_at"], "lesson": json.loads(row["lesson_json"]),
                         "verification": json.loads(row["verification_json"]), "sources": json.loads(row["evidence_json"]),
                     })
@@ -298,14 +305,20 @@ class TutorWebApplication:
                             self.send_json(HTTPStatus.CONFLICT, {"status": "BUSY", "message": "Another lesson is currently being prepared."})
                             return
                         try:
+                            learner_age = int(payload.get("age", payload.get("level", application.settings.default_learner_age)))
                             result = application.agent.create_lesson(
                                 subject=str(payload.get("subject", "")).strip(),
                                 concept=" ".join(str(payload.get("concept", "")).split()),
                                 question=" ".join(str(payload.get("question", "")).split()),
-                                level=int(payload.get("level", application.settings.default_understanding_level)),
+                                level=learner_age,
                                 language=str(payload.get("language", application.settings.default_language)).strip(),
                                 minutes=int(payload.get("minutes", 5)),
                                 refresh=bool(payload.get("refresh", False)),
+                                age=learner_age,
+                                knowledge_level=str(payload.get("knowledge_level", application.settings.default_knowledge_level)),
+                                story_style=str(payload.get("story_style", application.settings.default_story_style)),
+                                difficulty=str(payload.get("difficulty", application.settings.default_difficulty)),
+                                profile_override=str(payload.get("profile_override", "")),
                             )
                         finally:
                             application.generation_lock.release()

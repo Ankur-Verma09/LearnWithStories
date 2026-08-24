@@ -1,0 +1,8 @@
+[
+  {"subject":"Physics","topic":"Newton's Third Law","age":8,"knowledge_level":"beginner"},
+  {"subject":"Biology","topic":"Photosynthesis","age":12,"knowledge_level":"beginner"},
+  {"subject":"Chemistry","topic":"Chemical Bonding","age":16,"knowledge_level":"intermediate"},
+  {"subject":"Mathematics","topic":"Probability","age":22,"knowledge_level":"advanced"},
+  {"subject":"History","topic":"Industrial Revolution","age":28,"knowledge_level":"beginner"},
+  {"subject":"Computer Science","topic":"Recursion","age":40,"knowledge_level":"intermediate"}
+]

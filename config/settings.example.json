@@ -1,8 +1,11 @@
 {
-  "model_provider": "openai",
-  "model_base_url": "https://api.openai.com/v1",
-  "model_name": "gpt-5-mini",
+  "model_provider": "ollama",
+  "model_base_url": "http://192.168.1.20:11434",
+  "model_name": "gemma3:12b",
   "model_api_key": "",
+  "model_temperature": 0.65,
+  "model_max_retries": 1,
+  "ollama_keep_alive": "30m",
   "request_timeout_seconds": 180,
   "database_path": "data/story_tutor.db",
   "max_evidence_chunks": 5,
@@ -10,6 +13,11 @@
   "max_memory_tokens": 600,
   "max_session_summary_tokens": 300,
   "default_understanding_level": 18,
+  "default_learner_age": 16,
+  "default_knowledge_level": "beginner",
+  "default_story_style": "realistic_funny",
+  "default_difficulty": "standard",
+  "learning_profiles_path": "config/learning_profiles.json",
   "default_language": "English",
   "max_upload_bytes": 157286400
 }

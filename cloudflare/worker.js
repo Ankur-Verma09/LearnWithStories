@@ -4,7 +4,7 @@ function securityHeaders(headers) {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "no-referrer");
-  headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  headers.set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
   headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   headers.set(
     "Content-Security-Policy",
