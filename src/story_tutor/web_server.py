@@ -5,6 +5,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 import socket
 import sqlite3
 import threading
@@ -17,7 +18,20 @@ from .config import Settings
 from .converter import ConversionError, convert_document, file_sha256, safe_name
 from .db import Database
 from .exams import ExamService
-from .model_client import ModelError, create_model_client
+from .model_client import ModelError, create_model_client, public_model_error
+
+
+def public_validation_error(error: Exception, fallback: str = "Review the submitted values and try again.") -> str:
+    message = " ".join(str(error).split())
+    technical = re.compile(
+        r"traceback|stack trace|syntaxerror|typeerror|referenceerror|sqlite|urllib|"
+        r"<!doctype|<html|<script|```|\bfunction\s*\(|\bselect\s+.+\bfrom\b|"
+        r"\binsert\s+into\b|(?:[a-z]:\\|/(?:app|usr|home|var)/)|\bat\s+[\w$.]+\s*\(",
+        re.IGNORECASE,
+    )
+    if not message or len(message) > 300 or technical.search(message):
+        return fallback
+    return message
 
 
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
@@ -64,6 +78,11 @@ class TutorWebApplication:
                 })
         for item in registered:
             item.pop("stored_path", None)
+            if item.get("error_message"):
+                item["error_message"] = public_validation_error(
+                    ValueError(str(item["error_message"])),
+                    "This document could not be processed. Review it and try again.",
+                )
         return registered + discovered
 
     def handler(self):
@@ -140,6 +159,12 @@ class TutorWebApplication:
                     if row is None:
                         self.send_json(HTTPStatus.NOT_FOUND, {"message": "Lesson not found"})
                         return
+                    if row["status"] != "PASS":
+                        self.send_json(HTTPStatus.CONFLICT, {
+                            "status": "LESSON_WITHHELD",
+                            "message": "This lesson was withheld because it did not pass the factual review.",
+                        })
+                        return
                     self.send_json(HTTPStatus.OK, {
                         "lesson_id": row["id"], "subject": row["subject"], "concept": row["concept"],
                         "question": row["question"],
@@ -188,7 +213,13 @@ class TutorWebApplication:
                         models = [item.get("name", "") for item in response.get("models", [])]
                         self.send_json(HTTPStatus.OK, {"status": "online", "provider": application.settings.model_provider, "models": models, "configured_model": application.settings.model_name})
                     except ModelError as error:
-                        self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"status": "offline", "message": str(error)})
+                        self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                            "status": "MODEL_OFFLINE",
+                            "message": public_model_error(error, application.settings.model_provider),
+                        })
+                    return
+                if path.startswith("/api/"):
+                    self.send_json(HTTPStatus.NOT_FOUND, {"status": "NOT_FOUND", "message": "API endpoint not found"})
                     return
                 if path == "/":
                     self.path = "/index.html"
@@ -313,10 +344,17 @@ class TutorWebApplication:
                         self.send_json(HTTPStatus.CREATED, {"score": score, "total": len(questions), "review": review, "mastery": mastery})
                         return
                     self.send_json(HTTPStatus.NOT_FOUND, {"message": "Endpoint not found"})
-                except (ValueError, TypeError, json.JSONDecodeError) as error:
-                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": str(error)})
+                except json.JSONDecodeError:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": "The request contained invalid JSON."})
+                except ValueError as error:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": public_validation_error(error)})
+                except TypeError:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": "One or more request fields have invalid values."})
                 except ModelError as error:
-                    self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"status": "MODEL_OFFLINE", "message": str(error)})
+                    self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                        "status": "MODEL_OFFLINE",
+                        "message": public_model_error(error, application.settings.model_provider),
+                    })
                 except Exception as error:
                     print(f"WEB ERROR {type(error).__name__}: {error}")
                     self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"status": "INTERNAL_ERROR", "message": "The application could not complete this request. Check the server window for details."})
@@ -331,8 +369,12 @@ class TutorWebApplication:
                     updated = application.database.update_topic(parts[2], str(payload.get("action", "")), payload)
                     if updated is None: self.send_json(HTTPStatus.NOT_FOUND, {"message":"Topic not found"}); return
                     self.send_json(HTTPStatus.OK, updated)
-                except (ValueError, TypeError, json.JSONDecodeError, sqlite3.IntegrityError) as error:
-                    self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":str(error)})
+                except json.JSONDecodeError:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":"The request contained invalid JSON."})
+                except ValueError as error:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":public_validation_error(error)})
+                except (TypeError, sqlite3.IntegrityError):
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":"The topic change could not be applied. Review the selected values and try again."})
 
             def do_DELETE(self) -> None:
                 path = urlparse(self.path).path
@@ -375,8 +417,12 @@ class TutorWebApplication:
                         self.send_json(HTTPStatus.OK, {"status": "DELETED", "message": f"{concept} was removed from this book only."})
                         return
                     self.send_json(HTTPStatus.NOT_FOUND, {"message": "Endpoint not found"})
-                except (ValueError, TypeError, json.JSONDecodeError) as error:
-                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": str(error)})
+                except json.JSONDecodeError:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": "The request contained invalid JSON."})
+                except ValueError as error:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": public_validation_error(error)})
+                except TypeError:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": "The selected item has an invalid identifier."})
                 except Exception as error:
                     print(f"DELETE ERROR {type(error).__name__}: {error}")
                     self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"status": "DELETE_FAILED", "message": "The selected library item could not be deleted."})
@@ -438,9 +484,10 @@ class TutorWebApplication:
                         "message": f"{file_name} is ready. {inserted} new evidence chunks were added.",
                     })
                 except (ConversionError, ValueError) as error:
+                    public_message = public_validation_error(error, "The document could not be processed. Confirm the file is valid and try again.")
                     if document_id is not None:
-                        application.database.update_document(document_id, status="FAILED", error_message=str(error))
-                    self.send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"status": "UPLOAD_FAILED", "message": str(error)})
+                        application.database.update_document(document_id, status="FAILED", error_message=public_message)
+                    self.send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"status": "UPLOAD_FAILED", "message": public_message})
                 except Exception as error:
                     if document_id is not None:
                         application.database.update_document(document_id, status="FAILED", error_message="Unexpected conversion error")

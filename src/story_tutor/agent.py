@@ -125,4 +125,10 @@ class StoryTutorAgent:
             "status": status,
         })
         self.database.record_event("lesson_generation", {"lesson_id": lesson_id, "status": status, "concept": lesson_focus, "question": question, "repaired": repaired})
-        return {"status": status, "cached": False, "repaired": repaired, "lesson_id": lesson_id, "lesson": lesson if status == "PASS" else None, "verification": verification, "sources": evidence if status == "PASS" else []}
+        if status != "PASS":
+            return {
+                "status": "LESSON_WITHHELD", "cached": False, "repaired": repaired,
+                "lesson_id": lesson_id, "lesson": None, "verification": None, "sources": [],
+                "message": "The generated lesson was withheld because it did not pass the factual review. Try again or narrow the question.",
+            }
+        return {"status": status, "cached": False, "repaired": repaired, "lesson_id": lesson_id, "lesson": lesson, "verification": verification, "sources": evidence}

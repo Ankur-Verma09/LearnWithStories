@@ -104,7 +104,7 @@ def _pdf_records(path: Path, meta: dict[str, str], source_id: str) -> list[dict[
     except ConversionError:
         raise
     except Exception as error:
-        raise ConversionError(f"The PDF could not be read: {error}") from error
+        raise ConversionError("The PDF could not be read. Confirm that it is a valid, uncorrupted PDF and try again.") from error
     usable = [(number, text) for number, text in pages if len(text) >= 80]
     if not usable or len(usable) < max(1, len(pages) // 10):
         raise ConversionError("This appears to be a scanned PDF without searchable text. Convert it with OCR, then upload the searchable PDF.")
@@ -148,7 +148,10 @@ def _docx_records(path: Path, meta: dict[str, str], source_id: str) -> list[dict
             xml = archive.read("word/document.xml")
     except (zipfile.BadZipFile, KeyError) as error:
         raise ConversionError("The Word file is not a valid DOCX document. Legacy .doc files must first be saved as .docx.") from error
-    root = ElementTree.fromstring(xml)
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as error:
+        raise ConversionError("The Word document structure is damaged. Open and save it as a new DOCX file, then try again.") from error
     ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     current = meta["default_topic"] or meta["title"]
     blocks: list[tuple[str, str]] = []

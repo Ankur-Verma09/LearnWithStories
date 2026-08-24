@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#173f35">
-  <title>Learn With Stories</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/uploads.css"><link rel="stylesheet" href="/cred-theme.css"><link rel="stylesheet" href="/question-preferences.css"><link rel="stylesheet" href="/exam.css">
+  <title>Learn With Stories</title><script src="/deployment-router.js"></script><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/uploads.css"><link rel="stylesheet" href="/cred-theme.css"><link rel="stylesheet" href="/question-preferences.css"><link rel="stylesheet" href="/exam.css">
 </head>
 <body>
   <div class="app-shell">
@@ -34,7 +34,7 @@
               <div class="card-title"><span class="number">01</span><div><h2>Build a lesson</h2><p>Start with an available subject, then search its topics.</p></div></div>
               <form id="lessonForm">
                 <label class="subject-first"><span>Subject</span><select id="subject" required><option value="">Loading available subjects...</option></select><small>Only subjects backed by an uploaded and indexed file appear here.</small></label>
-                <label class="topic-field"><span>Topic or sub-topic <i>optional</i></span><input id="concept" list="topicSuggestions" maxlength="120" placeholder="Choose a topic to narrow the source search"><datalist id="topicSuggestions"></datalist><small id="coverageHint">Leave this blank to search the full subject, or choose a topic to filter evidence strictly.</small></label>
+                <div class="topic-field"><label for="concept"><span>Topic or sub-topic <i>optional</i></span></label><div class="topic-combobox"><input id="concept" maxlength="120" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="topicSuggestions" aria-expanded="false" placeholder="Choose or type a topic"><button id="topicToggle" type="button" aria-label="Show topic suggestions" tabindex="-1">⌄</button><div class="topic-suggestions hidden" id="topicSuggestions" role="listbox"></div></div><small id="coverageHint">Leave this blank to search the full subject, or choose a topic to filter evidence strictly.</small></div>
                 <label class="question-field"><span>Your specific question</span><textarea id="lessonQuestion" maxlength="500" rows="3" required placeholder="For example: Why does compound interest grow faster than simple interest?"></textarea><small>Ask one clear question. The story and evidence will focus on answering it.</small></label>
                 <div class="control-row">
                   <label><span>Language</span><select id="language"><option>English</option><option>Hindi</option><option>Hinglish</option></select></label>

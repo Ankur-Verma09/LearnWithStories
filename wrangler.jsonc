@@ -6,7 +6,7 @@
   "assets": {
     "directory": "./web",
     "binding": "ASSETS",
-    "run_worker_first": true,
+    "run_worker_first": ["/api/*"],
     "not_found_handling": "single-page-application"
   },
   "vpc_services": [

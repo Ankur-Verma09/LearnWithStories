@@ -19,6 +19,31 @@ class ModelHTTPError(ModelError):
         self.status, self.detail, self.error_code, self.retry_after = status, detail, error_code, retry_after
 
 
+def public_model_error(error: ModelError, provider: str) -> str:
+    """Return a user-safe model error without provider payloads, URLs, or stack details."""
+    if isinstance(error, ModelHTTPError):
+        if error.status in {401, 403}:
+            return "The configured model credentials were rejected. Review the model setup and try again."
+        if error.status == 429:
+            return "The model service has reached a rate or usage limit. Wait for capacity to reset and try again."
+        if error.status == 400:
+            return "The model rejected this request. Shorten the question or try a narrower topic."
+        if 500 <= error.status <= 599:
+            return "The model service is temporarily unavailable. Please try again shortly."
+        return "The model service could not complete the request. Review Setup & health and try again."
+    message = str(error)
+    if message.startswith("No user-owned OpenAI API key is configured"):
+        return "No OpenAI API key is configured. Review Setup & health before generating a lesson."
+    if "rejected every configured API key" in message:
+        return "The configured OpenAI credentials were rejected. Replace them and restart the Dell service."
+    if "rate or quota capacity is unavailable" in message:
+        return "OpenAI rate or usage capacity is unavailable. Wait for the limit to reset and try again."
+    if "invalid structured JSON" in message or "JSON response must be an object" in message:
+        return "The model returned an invalid response. Retry the request; no unverified content was shown."
+    label = "OpenAI" if provider == "openai" else "The local model"
+    return f"{label} is unavailable. Review Setup & health and try again."
+
+
 class BaseModelClient:
     def __init__(self, settings: Settings):
         self.settings = settings

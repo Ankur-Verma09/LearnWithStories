@@ -21,6 +21,43 @@ function jsonResponse(status, payload) {
   return new Response(JSON.stringify(payload), { status, headers });
 }
 
+const PUBLIC_ERROR_MESSAGES = {
+  GATEWAY_NOT_CONFIGURED: "The secure Dell connection has not been configured yet.",
+  DELL_API_UNAVAILABLE: "The Dell service is offline or its secure tunnel is disconnected.",
+  MODEL_OFFLINE: "The model service is unavailable. Review Setup & health and try again.",
+  INTERNAL_ERROR: "The application could not complete this request. Please try again.",
+  DELETE_FAILED: "The selected library item could not be deleted.",
+  LESSON_WITHHELD: "The generated lesson was withheld because it did not pass the factual review.",
+};
+
+function safeErrorMessage(status, value, httpStatus) {
+  if (PUBLIC_ERROR_MESSAGES[status]) return PUBLIC_ERROR_MESSAGES[status];
+  const text = String(value || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const technical = /(?:traceback|stack trace|syntaxerror|typeerror|referenceerror|sqlite|urllib|<!doctype|<html|<script|```|\bfunction\s*\(|\bselect\s+.+\bfrom\b|\binsert\s+into\b|(?:[a-z]:\\|\/(?:app|usr|home|var)\/)|\bat\s+[\w$.]+\s*\()/i;
+  if (!text || text.length > 320 || technical.test(text)) {
+    return `The request could not be completed (HTTP ${httpStatus}). Please try again.`;
+  }
+  return text;
+}
+
+async function sanitizedErrorResponse(response) {
+  let payload = {};
+  try {
+    if ((response.headers.get("content-type") || "").includes("application/json")) {
+      payload = await response.json();
+    }
+  } catch {
+    payload = {};
+  }
+  const status = /^[A-Z][A-Z0-9_]{1,40}$/.test(String(payload.status || ""))
+    ? String(payload.status)
+    : "REQUEST_FAILED";
+  return jsonResponse(response.status, {
+    status,
+    message: safeErrorMessage(status, payload.message, response.status),
+  });
+}
+
 async function proxyApi(request, env) {
   if (!ALLOWED_METHODS.has(request.method)) {
     return jsonResponse(405, { status: "METHOD_NOT_ALLOWED", message: "This API method is not allowed." });
@@ -54,6 +91,9 @@ async function proxyApi(request, env) {
 
   try {
     const response = await env.DELL_API.fetch(new Request(upstream, init));
+    if (!response.ok) {
+      return sanitizedErrorResponse(response);
+    }
     const responseHeaders = securityHeaders(new Headers(response.headers));
     responseHeaders.delete("set-cookie");
     responseHeaders.set("Cache-Control", "no-store");

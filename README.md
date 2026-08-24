@@ -320,6 +320,19 @@ The application binds to `127.0.0.1` by default, so only the Dell can open it. L
 
 The repository includes `wrangler.jsonc` and `cloudflare/worker.js`. Cloudflare Workers VPC lets the Worker call the Dell through an outbound-only private tunnel. The Dell API receives no public hostname, and the browser calls only same-origin `/api/*` URLs on the portal. Workers VPC is currently a beta service and is free on Workers plans during the beta period.
 
+### Zero-charge operating guardrails
+
+This deployment can run without Cloudflare charges when the account remains on **Workers Free** and **Zero Trust Free**:
+
+- Do not upgrade Workers, Pages, or Zero Trust and do not enable paid add-ons.
+- Keep Cloudflare Access below the Free plan's 50-user limit.
+- Static portal assets are served directly and do not invoke the Worker. Only `/api/*` uses the Workers Free allowance of 100,000 requests per day. When that allowance is exhausted, requests fail until the daily reset; the Free plan does not provide paid overage capacity.
+- Workers VPC is free only while it remains in beta. Check Cloudflare's Workers VPC pricing before accepting any future plan or billing change.
+- Cloudflare Tunnel is used only as the private outbound connector; no paid network service is required for this design.
+- Do not enable Workers AI, R2, D1, KV, Durable Objects, Logpush, Argo, paid image optimization, or another usage-based product for this portal.
+
+Cloudflare being free does **not** make OpenAI API usage free. For a strict zero-charge model path, set `model_provider` to `ollama` and point `model_base_url` to the RTX PC. Until the RTX PC is ready, do not generate lessons or examinations while `model_provider` is `openai`; library browsing, manual topic entry, and administrator correction remain available without model calls. Electricity and Internet service used by the Dell and RTX PC remain ordinary household costs.
+
 ### 1. Keep the Dell service private
 
 Start Learn With Stories normally and verify this address on the Dell:
@@ -365,7 +378,7 @@ The Worker uses the `DELL_API` VPC Service binding. No Dell hostname, API key, A
 
 Protect the Worker itself so anonymous visitors cannot use the portal or call the Dell:
 
-1. Open the Worker and select **Settings → Access**.
+1. Open the Worker and select the separate **Access** tab. Pages projects do not have this Worker-level tab.
 2. Select **Protect this Worker behind Access** and protect **All traffic**.
 3. Create an **Allow** policy restricted to your email address or trusted family email addresses.
 4. Do not create an `Allow everyone` or public bypass rule.
@@ -379,6 +392,140 @@ Protect the Worker itself so anonymous visitors cannot use the portal or call th
 5. Restart the Dell app and confirm that the portal recovers.
 
 If the portal loads but subjects do not, check in this order: Dell app, Cloudflared Windows service, tunnel health, VPC Service target, `DELL_API` binding, and Worker deployment status.
+
+## Start the complete project after a restart or shutdown
+
+Use **Docker as the normal Dell runtime**. Do not also run `start-learn-with-stories.cmd`, because both methods use port `8766` and the same SQLite database.
+
+### One-time automatic-start settings
+
+1. In Docker Desktop, open **Settings → General**, enable **Start Docker Desktop when you sign in to your computer**, and apply the change.
+2. Confirm that Cloudflare Tunnel is installed as a Windows service. In an Administrator PowerShell window, run:
+
+   ```powershell
+   Get-CimInstance Win32_Service -Filter "Name='cloudflared'" |
+     Select-Object Name, State, StartMode
+   ```
+
+   The expected values are `Running` and `Auto`. If the service exists but is not automatic, run once:
+
+   ```powershell
+   Set-Service -Name cloudflared -StartupType Automatic
+   Start-Service -Name cloudflared
+   ```
+
+3. The Docker service already has `restart: unless-stopped` in `compose.yaml`. It normally returns when Docker Desktop starts, provided the container was not manually stopped. The startup command below is still safe to run after every reboot.
+4. When using the RTX local model, configure the Ollama Windows application to start when that PC signs in. No Ollama or RTX step is required while the application is deliberately using OpenAI, although OpenAI API calls may incur charges.
+
+Do not paste or reinstall the Cloudflare tunnel token after each restart. The installed Windows service retains the tunnel configuration. If a tunnel token was exposed, rotate it in Cloudflare and reinstall the service using only the replacement command shown in the dashboard.
+
+### Normal power-on sequence
+
+#### 1. Start the RTX model PC when using Ollama
+
+1. Power on the RTX PC and connect it to the same private network as the Dell.
+2. Open Ollama from the Windows Start menu if it did not start automatically.
+3. On the RTX PC, verify it:
+
+   ```powershell
+   ollama list
+   Invoke-RestMethod "http://127.0.0.1:11434/api/tags"
+   ```
+
+4. Keep the RTX PC awake while generating lessons or examinations. Library browsing and manual administrator corrections do not require the model.
+
+#### 2. Start the Dell application
+
+1. Power on the Dell, connect it to the Internet, and start Docker Desktop. Wait until Docker Desktop reports that the engine is running.
+2. Open PowerShell and run:
+
+   ```powershell
+   Set-Location "E:\LearnWithStories"
+   docker compose up -d
+   docker compose ps
+   ```
+
+3. `docker compose ps` should show `learn-with-stories` as running or healthy. If this is the first run, or the Docker image must be rebuilt after dependency or Dockerfile changes, use:
+
+   ```powershell
+   docker compose up -d --build
+   ```
+
+#### 3. Verify the Cloudflare Tunnel service
+
+Run on the Dell:
+
+```powershell
+Get-Service -Name cloudflared
+```
+
+If it is stopped, open PowerShell as Administrator and run:
+
+```powershell
+Start-Service -Name cloudflared
+```
+
+The Cloudflare Worker itself is hosted by Cloudflare and does not need to be started or redeployed after a Dell or RTX PC reboot.
+
+#### 4. Verify the complete route
+
+First test the private Dell API locally:
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8766/api/health"
+```
+
+Then open the protected portal:
+
+```text
+https://learn-with-stories.aaankurankur.workers.dev
+```
+
+Sign in through Cloudflare Access and open **Setup & health**. Confirm that the Dell API is online and, when using Ollama, that the configured model is available.
+
+### Normal shutdown sequence
+
+Before shutting down the Dell, optionally stop the application cleanly:
+
+```powershell
+Set-Location "E:\LearnWithStories"
+docker compose stop
+```
+
+Windows stops the `cloudflared` service during shutdown. The Cloudflare Worker remains deployed but returns the controlled `DELL_API_UNAVAILABLE` response while the Dell is offline. Shut down the RTX PC after active model generation has finished.
+
+At the next startup, always run `docker compose up -d`; it starts a previously stopped container without deleting the database or uploaded books.
+
+### Native Windows fallback without Docker
+
+Use this only when Docker is stopped:
+
+```powershell
+Set-Location "E:\LearnWithStories"
+& ".\start-learn-with-stories.cmd"
+```
+
+Keep that terminal window open. Stop the native server with `Ctrl+C`. Before returning to Docker, close the native server and confirm that port `8766` is free.
+
+### Commands used only after changes
+
+These are not required after an ordinary reboot:
+
+- Run `docker compose up -d --build` after Python dependencies, the Dockerfile, or packaged application code changes.
+- Run `npx.cmd wrangler deploy` after `cloudflare/worker.js`, `wrangler.jsonc`, or files in `web` change and a direct Worker deployment is required.
+- Run `git pull` only when new repository changes need to be downloaded to the Dell.
+- Never run `docker compose down -v`; removing volumes is unnecessary and could delete Docker-managed data. The current project database and uploaded books are bind-mounted under `E:\LearnWithStories\data`.
+
+### Quick recovery checks
+
+| Symptom | Check and recovery |
+|---|---|
+| `docker compose` says no configuration file was found | Run `Set-Location "E:\LearnWithStories"` first. |
+| `http://127.0.0.1:8766` is unreachable | Start Docker Desktop, run `docker compose up -d`, then inspect `docker compose logs --tail 100 learn-with-stories`. |
+| Local `/api/health` works but the portal reports `DELL_API_UNAVAILABLE` | Check `Get-Service cloudflared`, the tunnel health in Cloudflare, and the VPC Service binding. |
+| Portal opens but the model is offline | Start the RTX PC and Ollama, verify its private IP, and test `/api/tags` from the Dell. |
+| Port `8766` is already in use | Stop either the Docker container or the native launcher; never run both. |
+| Cloudflare asks for deployment after a reboot | Do not redeploy for a reboot. Verify the Dell container and `cloudflared` service instead. |
 
 ## First learning test
 
