@@ -40,6 +40,29 @@ def lesson_shape_issues(lesson: dict[str, Any], valid_evidence_ids: set[str]) ->
     return issues
 
 
+def followup_shape_issues(answer: dict[str, Any], valid_evidence_ids: set[str]) -> list[str]:
+    issues: list[str] = []
+    scope = str(answer.get("scope_status", "")).upper()
+    if scope not in {"IN_SCOPE", "OUT_OF_SCOPE"}:
+        issues.append("scope_status must be IN_SCOPE or OUT_OF_SCOPE")
+    if not isinstance(answer.get("answer"), str) or not answer["answer"].strip():
+        issues.append("answer must be a non-empty string")
+    markers = answer.get("source_markers")
+    if not isinstance(markers, list):
+        issues.append("source_markers must be an array")
+    elif scope == "IN_SCOPE" and not markers:
+        issues.append("an in-scope answer must cite supplied evidence")
+    elif not set(markers) <= valid_evidence_ids:
+        issues.append("source_markers contains an unknown evidence ID")
+    suggestions = answer.get("suggested_questions")
+    if not isinstance(suggestions, list) or len(suggestions) > 3 or not all(isinstance(item, str) for item in suggestions):
+        issues.append("suggested_questions must be an array of at most three strings")
+    for field in ("possible_misconception", "conversation_summary"):
+        if not isinstance(answer.get(field), str):
+            issues.append(f"{field} must be a string")
+    return issues
+
+
 def apply_server_metadata(
     lesson: dict[str, Any], *, subject: str, topic: str, age: int,
     age_profile: str, knowledge_level: str, story_style: str, difficulty: str,

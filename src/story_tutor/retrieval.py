@@ -46,5 +46,6 @@ class Retriever:
                 "evidence_id": f"E{row['id']}", "score": score, "source_id": row["source_id"],
                 "title": row["title"], "publisher": row["publisher"], "section": row["section"],
                 "subject": row["subject"], "concept": row["concept"], "text": row["text"],
+                "page_start": int(row["page_start"] or 0), "page_end": int(row["page_end"] or 0),
             })
         return results

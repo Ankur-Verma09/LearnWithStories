@@ -11,9 +11,12 @@ from .learning_profiles import LearningProfileEngine, validate_generation_prefer
 from .memory import ContextMemoryManager, approximate_tokens
 from .model_client import create_model_client
 from .prompt_builder import StoryPromptBuilder
-from .prompts import PLAN_SYSTEM, REPAIR_SYSTEM, VERIFY_SYSTEM, WRITE_SYSTEM
+from .prompts import (
+    FOLLOW_UP_REPAIR_SYSTEM, FOLLOW_UP_SYSTEM, FOLLOW_UP_VERIFY_SYSTEM,
+    PLAN_SYSTEM, REPAIR_SYSTEM, VERIFY_SYSTEM, WRITE_SYSTEM,
+)
 from .retrieval import Retriever
-from .schemas import apply_server_metadata, lesson_shape_issues
+from .schemas import apply_server_metadata, followup_shape_issues, lesson_shape_issues
 
 
 def stable_cache_key(material: dict[str, Any]) -> str:
@@ -96,6 +99,7 @@ class StoryTutorAgent:
 
         lesson_focus = concept or question
         context = self.memory.build(subject, lesson_focus, learner_age, language)
+        context["progression"] = self.database.progression_context(subject, lesson_focus)
         cache_context = {
             "facts": list(context.get("facts", [])),
             "memories": [item for item in context.get("memories", []) if item.get("kind") != "model_preference"],
@@ -206,3 +210,93 @@ class StoryTutorAgent:
             "lesson_id": lesson_id, "lesson": lesson,
             "verification": verification, "sources": evidence,
         }
+
+    def ask_followup(
+        self, lesson_id: int, question: str, conversation_id: int | None = None,
+        learner_id: int = 1,
+    ) -> dict[str, Any]:
+        question = " ".join(str(question).split())
+        if len(question) < 3:
+            raise ValueError("Enter a follow-up question")
+        if len(question) > 500:
+            raise ValueError("Follow-up questions must be 500 characters or fewer")
+        lesson_row = self.database.lesson_detail(lesson_id)
+        if lesson_row is None or lesson_row["status"] != "PASS":
+            raise ValueError("Verified lesson not found")
+
+        conversation_id = self.database.get_or_create_conversation(lesson_id, conversation_id, learner_id)
+        conversation = self.database.conversation_context(conversation_id, max_messages=6)
+        while conversation["recent_messages"] and approximate_tokens(json.dumps(conversation, ensure_ascii=False)) > self.settings.max_session_summary_tokens:
+            conversation["recent_messages"].pop(0)
+
+        lesson = json.loads(lesson_row["lesson_json"])
+        lesson_snapshot = {
+            "subject": lesson_row["subject"], "topic": lesson_row["concept"],
+            "original_question": lesson_row["question"], "title": lesson.get("title", ""),
+            "concept_summary": lesson.get("concept_summary", ""), "key_points": lesson.get("key_points", []),
+            "exam_truth": lesson.get("exam_truth", []), "story": str(lesson.get("story", ""))[:6000],
+        }
+        evidence = json.loads(lesson_row["evidence_json"])
+        while evidence and approximate_tokens(json.dumps(evidence, ensure_ascii=False)) > self.settings.max_evidence_tokens:
+            evidence.pop()
+        if not evidence:
+            return {"status": "NEEDS_EVIDENCE", "message": "The verified source evidence for this lesson is unavailable."}
+
+        learner = {
+            "age": int(lesson_row["learner_age"]), "knowledge_level": lesson_row["knowledge_level"],
+            "learning_profile": lesson_row["learning_profile"],
+            "progression": self.database.progression_context(lesson_row["subject"], lesson_row["concept"], learner_id),
+        }
+        request_material = {"lesson_id": lesson_id, "question": question, "conversation": conversation}
+        request_id = stable_cache_key(request_material)[:16]
+        candidate = self._model_call(
+            "followup", request_id, FOLLOW_UP_SYSTEM,
+            self.prompts.followup(lesson=lesson_snapshot, question=question, evidence=evidence,
+                                  conversation=conversation, learner=learner),
+            temperature=min(0.35, self.settings.model_temperature), max_tokens=900,
+        )
+        if str(candidate.get("scope_status", "")).upper() == "OUT_OF_SCOPE":
+            safe_answer = "That question is outside this lesson's subject or topic. Start a new lesson so the tutor can retrieve the correct approved evidence."
+            saved = self.database.save_followup_exchange(
+                conversation_id, question, safe_answer, [],
+                str(candidate.get("conversation_summary", "")), learner_id=learner_id,
+            )
+            return {"status": "OUT_OF_SCOPE", **saved, "suggested_questions": []}
+
+        valid_ids = {item["evidence_id"] for item in evidence}
+        issues = followup_shape_issues(candidate, valid_ids)
+        verification = self._model_call(
+            "followup_verify", request_id, FOLLOW_UP_VERIFY_SYSTEM,
+            self.prompts.verify_followup(question=question, evidence=evidence, answer=candidate),
+            temperature=0.0, max_tokens=600,
+        )
+        if str(verification.get("verdict", "FAIL")).upper() != "PASS" or issues:
+            candidate = self._model_call(
+                "followup_repair", request_id, FOLLOW_UP_REPAIR_SYSTEM,
+                self.prompts.repair_followup(
+                    question=question, evidence=evidence, conversation=conversation, answer=candidate,
+                    verification=verification, format_issues=issues,
+                ),
+                temperature=min(0.2, self.settings.model_temperature), max_tokens=900,
+            )
+            issues = followup_shape_issues(candidate, valid_ids)
+            verification = self._model_call(
+                "followup_verify", request_id, FOLLOW_UP_VERIFY_SYSTEM,
+                self.prompts.verify_followup(question=question, evidence=evidence, answer=candidate),
+                temperature=0.0, max_tokens=600,
+            )
+        if issues or str(verification.get("verdict", "FAIL")).upper() != "PASS":
+            return {"status": "FOLLOWUP_WITHHELD", "conversation_id": conversation_id,
+                    "message": "The follow-up answer was withheld because it could not be verified against the approved sources."}
+
+        markers = set(candidate.get("source_markers", []))
+        sources = [{"evidence_id": item["evidence_id"], "title": item.get("title", ""),
+                    "section": item.get("section", ""), "page_start": item.get("page_start", 0),
+                    "page_end": item.get("page_end", 0)} for item in evidence if item["evidence_id"] in markers]
+        saved = self.database.save_followup_exchange(
+            conversation_id, question, " ".join(str(candidate["answer"]).split()), sources,
+            str(candidate.get("conversation_summary", "")),
+            str(candidate.get("possible_misconception", "")), learner_id,
+        )
+        return {"status": "PASS", **saved, "suggested_questions": candidate.get("suggested_questions", [])[:3],
+                "verification": {"verdict": "PASS"}}

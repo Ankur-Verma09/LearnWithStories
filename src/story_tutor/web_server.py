@@ -146,8 +146,8 @@ class TutorWebApplication:
                     return
                 if path == "/api/config":
                     self.send_json(HTTPStatus.OK, {
-                        "api_version": 5,
-                        "features": ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "online_examinations", "adaptive_learning_profiles"],
+                        "api_version": 6,
+                        "features": ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "online_examinations", "adaptive_learning_profiles", "progressive_mastery", "lesson_followups"],
                         "default_level": application.settings.default_learner_age,
                         "default_learner_age": application.settings.default_learner_age,
                         "default_knowledge_level": application.settings.default_knowledge_level,
@@ -163,8 +163,24 @@ class TutorWebApplication:
                     self.send_json(HTTPStatus.OK, [dict(row) for row in application.database.lesson_history(12)])
                     return
                 if path.startswith("/api/lessons/"):
+                    parts = path.strip("/").split("/")
+                    if len(parts) == 4 and parts[:2] == ["api", "lessons"] and parts[3] == "follow-ups":
+                        try:
+                            lesson_id = int(parts[2])
+                        except ValueError:
+                            self.send_json(HTTPStatus.BAD_REQUEST, {"message": "Invalid lesson id"})
+                            return
+                        conversation = application.database.conversation_for_lesson(lesson_id)
+                        if conversation is None:
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Verified lesson not found"})
+                        else:
+                            self.send_json(HTTPStatus.OK, conversation)
+                        return
+                    if len(parts) != 3:
+                        self.send_json(HTTPStatus.NOT_FOUND, {"message": "Lesson endpoint not found"})
+                        return
                     try:
-                        lesson_id = int(path.rsplit("/", 1)[-1])
+                        lesson_id = int(parts[2])
                     except ValueError:
                         self.send_json(HTTPStatus.BAD_REQUEST, {"message": "Invalid lesson id"})
                         return
@@ -334,6 +350,24 @@ class TutorWebApplication:
                         status = HTTPStatus.OK if result.get("status") == "PASS" else HTTPStatus.UNPROCESSABLE_ENTITY
                         self.send_json(status, result)
                         return
+                    if path.startswith("/api/lessons/") and path.endswith("/follow-ups"):
+                        parts = path.strip("/").split("/")
+                        if len(parts) != 4:
+                            raise ValueError("Invalid follow-up endpoint")
+                        if not application.generation_lock.acquire(blocking=False):
+                            self.send_json(HTTPStatus.CONFLICT, {"status": "BUSY", "message": "Another AI response is currently being prepared."})
+                            return
+                        try:
+                            conversation_value = payload.get("conversation_id")
+                            conversation_id = int(conversation_value) if conversation_value not in {None, ""} else None
+                            result = application.agent.ask_followup(
+                                int(parts[2]), str(payload.get("question", "")), conversation_id,
+                            )
+                        finally:
+                            application.generation_lock.release()
+                        status = HTTPStatus.CREATED if result.get("status") in {"PASS", "OUT_OF_SCOPE"} else HTTPStatus.UNPROCESSABLE_ENTITY
+                        self.send_json(status, result)
+                        return
                     if path == "/api/memory":
                         content = str(payload.get("content", "")).strip()
                         if not content:
@@ -361,7 +395,9 @@ class TutorWebApplication:
                         difficulty = str(payload.get("difficulty", "right"))
                         if difficulty not in {"too_easy", "right", "too_hard"}:
                             raise ValueError("Invalid difficulty feedback")
-                        mastery = application.database.save_comprehension(lesson_id, score, len(questions), answers, difficulty)
+                        mastery = application.database.save_comprehension(
+                            lesson_id, score, len(questions), answers, difficulty, questions,
+                        )
                         review = [{"correct_index": item.get("correct_index"), "explanation": item.get("explanation", "")} for item in questions]
                         self.send_json(HTTPStatus.CREATED, {"score": score, "total": len(questions), "review": review, "mastery": mastery})
                         return
@@ -406,6 +442,12 @@ class TutorWebApplication:
                         if not application.database.delete_memory(int(parts[2])):
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Preference not found"}); return
                         self.send_json(HTTPStatus.OK, {"status": "DELETED", "message": "Preference deleted."})
+                        return
+                    if len(parts) == 4 and parts[:2] == ["api", "lessons"] and parts[3] == "follow-ups":
+                        if not application.database.clear_conversation(int(parts[2])):
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Follow-up conversation not found"})
+                            return
+                        self.send_json(HTTPStatus.OK, {"status": "CLEARED", "message": "Follow-up conversation cleared."})
                         return
                     if len(parts) < 3 or parts[:2] != ["api", "documents"]:
                         self.send_json(HTTPStatus.NOT_FOUND, {"message": "Endpoint not found"})

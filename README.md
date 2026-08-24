@@ -560,6 +560,43 @@ Users can add and delete teaching preferences, goals, and misconceptions. The mo
 
 Only relevant bounded learner context and retrieved evidence are sent to the configured model. Context memory reduces repeated prompt content; it does not train the model.
 
+### Progressive learning and review scheduling
+
+The first release uses one local **Default learner** profile. Every submitted recall check updates that learner's topic progress using deterministic server rules; the model cannot directly change mastery.
+
+The progression states are:
+
+```text
+Foundation → Developing → Proficient → Mastered
+```
+
+Progress records include mastery, attempt count, success and incorrect streaks, a recommended knowledge level, detected recall gaps, and the next review date. Incorrect recall answers create reviewable misconception signals. Correct later answers can resolve the matching signal. Asking a follow-up question does not lower mastery by itself.
+
+Open **Progress** to see the current stage, mastery percentage, attempts, and scheduled review date for each topic. Existing mastery and recall history are migrated into the default learner profile automatically; books, approvals, lessons, and source references are preserved.
+
+Progressive behaviour is implemented through stored learner state and bounded prompt context. It does not retrain OpenAI or Ollama after each response, and switching providers does not erase learner progress.
+
+### Ask follow-up questions after a story
+
+After a verified story appears:
+
+1. Scroll to **Ask a follow-up question** below the recall check.
+2. Ask for clarification, another example, or a deeper explanation about that lesson.
+3. Review the answer and its book/page references.
+4. Select a suggested question or type another follow-up.
+5. Use **Clear conversation** to remove that lesson's follow-up messages. The lesson, quiz attempts, and mastery remain intact.
+
+Follow-up answers are restricted to the lesson subject/topic and its approved evidence. An unrelated question is redirected to a new lesson instead of mixing source material. The application sends only a compact conversation summary and the latest bounded messages to reduce context usage. Every in-scope answer passes a separate evidence-verification step before display.
+
+The relevant APIs are:
+
+```text
+GET    /api/lessons/{lesson_id}/follow-ups
+POST   /api/lessons/{lesson_id}/follow-ups
+DELETE /api/lessons/{lesson_id}/follow-ups
+GET    /api/progress
+```
+
 ### Knowledge Library review
 
 The hierarchy is:

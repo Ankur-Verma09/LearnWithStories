@@ -6,11 +6,21 @@ import sqlite3
 from typing import Any, Iterable
 
 from .hierarchy import clean_name, normalized_name, stable_node_id
+from .progression import misconception_key, progression_update
 
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS learner_profiles (
+  id INTEGER PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO learner_profiles(id,display_name,is_default) VALUES (1,'Default learner',1);
 
 CREATE TABLE IF NOT EXISTS source_chunks (
   id INTEGER PRIMARY KEY,
@@ -61,6 +71,7 @@ CREATE TABLE IF NOT EXISTS lessons (
   lesson_json TEXT NOT NULL,
   verification_json TEXT NOT NULL,
   status TEXT NOT NULL,
+  learner_id INTEGER NOT NULL DEFAULT 1 REFERENCES learner_profiles(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -89,6 +100,84 @@ CREATE TABLE IF NOT EXISTS mastery (
   last_reviewed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(subject, concept)
 );
+
+CREATE TABLE IF NOT EXISTS learner_topic_progress (
+  learner_id INTEGER NOT NULL REFERENCES learner_profiles(id),
+  subject TEXT NOT NULL,
+  concept TEXT NOT NULL,
+  mastery_score REAL NOT NULL DEFAULT 0,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  success_streak INTEGER NOT NULL DEFAULT 0,
+  incorrect_streak INTEGER NOT NULL DEFAULT 0,
+  progression_stage TEXT NOT NULL DEFAULT 'foundation',
+  recommended_knowledge_level TEXT NOT NULL DEFAULT 'beginner',
+  last_reviewed_at TEXT,
+  next_review_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(learner_id, subject, concept)
+);
+
+CREATE TABLE IF NOT EXISTS learning_attempts (
+  id INTEGER PRIMARY KEY,
+  learner_id INTEGER NOT NULL REFERENCES learner_profiles(id),
+  lesson_id INTEGER REFERENCES lessons(id),
+  source_attempt_id INTEGER UNIQUE,
+  attempt_type TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  difficulty_feedback TEXT NOT NULL DEFAULT 'right',
+  response_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS misconceptions (
+  id INTEGER PRIMARY KEY,
+  learner_id INTEGER NOT NULL REFERENCES learner_profiles(id),
+  subject TEXT NOT NULL,
+  concept TEXT NOT NULL,
+  misconception_key TEXT NOT NULL,
+  description TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'recall_check',
+  occurrence_count INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at TEXT,
+  UNIQUE(learner_id, subject, concept, misconception_key)
+);
+
+CREATE TABLE IF NOT EXISTS review_schedule (
+  learner_id INTEGER NOT NULL REFERENCES learner_profiles(id),
+  subject TEXT NOT NULL,
+  concept TEXT NOT NULL,
+  due_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'SCHEDULED',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(learner_id, subject, concept)
+);
+
+CREATE TABLE IF NOT EXISTS lesson_conversations (
+  id INTEGER PRIMARY KEY,
+  learner_id INTEGER NOT NULL REFERENCES learner_profiles(id),
+  lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  summary TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(learner_id, lesson_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  id INTEGER PRIMARY KEY,
+  conversation_id INTEGER NOT NULL REFERENCES lesson_conversations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+  content TEXT NOT NULL,
+  sources_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_learning_attempts_learner ON learning_attempts(learner_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_review_schedule_due ON review_schedule(learner_id,status,due_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_order ON conversation_messages(conversation_id,id);
 
 CREATE TABLE IF NOT EXISTS source_documents (
   id INTEGER PRIMARY KEY,
@@ -222,6 +311,9 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            connection.execute(
+                "INSERT OR IGNORE INTO learner_profiles(id,display_name,is_default) VALUES (1,'Default learner',1)"
+            )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(source_documents)")}
             table_sql = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='source_documents'"
@@ -274,6 +366,7 @@ class Database:
                 "difficulty": "TEXT NOT NULL DEFAULT 'standard'",
                 "model_provider": "TEXT NOT NULL DEFAULT 'ollama'",
                 "generation_ms": "INTEGER NOT NULL DEFAULT 0",
+                "learner_id": "INTEGER NOT NULL DEFAULT 1",
             }
             age_added = "learner_age" not in lesson_columns
             for name, definition in lesson_additions.items():
@@ -281,6 +374,25 @@ class Database:
                     connection.execute(f"ALTER TABLE lessons ADD COLUMN {name} {definition}")
             if age_added:
                 connection.execute("UPDATE lessons SET learner_age=understanding_level")
+            connection.execute("""INSERT OR IGNORE INTO learner_topic_progress
+              (learner_id,subject,concept,mastery_score,attempt_count,progression_stage,
+               recommended_knowledge_level,last_reviewed_at,next_review_at)
+              SELECT 1,subject,concept,score,attempts,
+                CASE WHEN score>=0.85 AND attempts>=4 THEN 'mastered'
+                     WHEN score>=0.65 AND attempts>=2 THEN 'proficient'
+                     WHEN score>=0.35 THEN 'developing' ELSE 'foundation' END,
+                CASE WHEN score>=0.85 AND attempts>=4 THEN 'advanced'
+                     WHEN score>=0.65 AND attempts>=2 THEN 'intermediate' ELSE 'beginner' END,
+                last_reviewed,datetime(last_reviewed,'+3 days')
+              FROM mastery""")
+            connection.execute("""INSERT OR IGNORE INTO learning_attempts
+              (learner_id,lesson_id,source_attempt_id,attempt_type,score,total,difficulty_feedback,response_json,created_at)
+              SELECT 1,lesson_id,id,'recall_check',score,total,difficulty_feedback,answers_json,created_at
+              FROM comprehension_attempts""")
+            connection.execute("""INSERT OR IGNORE INTO review_schedule
+              (learner_id,subject,concept,due_at,reason,status)
+              SELECT learner_id,subject,concept,COALESCE(next_review_at,CURRENT_TIMESTAMP),'Migrated mastery review','SCHEDULED'
+              FROM learner_topic_progress""")
 
     def ingest(self, records: Iterable[dict[str, Any]]) -> tuple[int, int]:
         inserted = skipped = 0
@@ -443,18 +555,27 @@ class Database:
             ).fetchone()
 
     def save_lesson(self, values: dict[str, Any]) -> int:
+        values = {"learner_id": 1, **values}
         with self.connect() as connection:
-            cursor = connection.execute(
-                """INSERT OR REPLACE INTO lessons
+            connection.execute(
+                """INSERT INTO lessons
                 (cache_key,subject,concept,question,understanding_level,learner_age,knowledge_level,learning_profile,
                  story_style,difficulty,language,model_provider,model_name,generation_ms,
-                 evidence_json,context_json,lesson_json,verification_json,status)
+                 evidence_json,context_json,lesson_json,verification_json,status,learner_id)
                 VALUES (:cache_key,:subject,:concept,:question,:understanding_level,:learner_age,:knowledge_level,:learning_profile,
                  :story_style,:difficulty,:language,:model_provider,:model_name,:generation_ms,
-                 :evidence_json,:context_json,:lesson_json,:verification_json,:status)""",
+                 :evidence_json,:context_json,:lesson_json,:verification_json,:status,:learner_id)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                  subject=excluded.subject,concept=excluded.concept,question=excluded.question,
+                  understanding_level=excluded.understanding_level,learner_age=excluded.learner_age,
+                  knowledge_level=excluded.knowledge_level,learning_profile=excluded.learning_profile,
+                  story_style=excluded.story_style,difficulty=excluded.difficulty,language=excluded.language,
+                  model_provider=excluded.model_provider,model_name=excluded.model_name,generation_ms=excluded.generation_ms,
+                  evidence_json=excluded.evidence_json,context_json=excluded.context_json,lesson_json=excluded.lesson_json,
+                  verification_json=excluded.verification_json,status=excluded.status,learner_id=excluded.learner_id""",
                 values,
             )
-            return int(cursor.lastrowid)
+            return int(connection.execute("SELECT id FROM lessons WHERE cache_key=?", (values["cache_key"],)).fetchone()["id"])
 
     def record_event(self, event_type: str, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
@@ -476,28 +597,185 @@ class Database:
         with self.connect() as connection:
             return connection.execute("SELECT * FROM lessons WHERE id=?", (lesson_id,)).fetchone()
 
-    def save_comprehension(self, lesson_id: int, score: int, total: int, answers: list[int], difficulty: str) -> dict[str, Any]:
+    def conversation_for_lesson(self, lesson_id: int, learner_id: int = 1) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            lesson = connection.execute("SELECT id FROM lessons WHERE id=? AND status='PASS'", (lesson_id,)).fetchone()
+            if lesson is None:
+                return None
+            conversation = connection.execute("""SELECT id,status,summary,created_at,updated_at
+              FROM lesson_conversations WHERE learner_id=? AND lesson_id=?""", (learner_id, lesson_id)).fetchone()
+            if conversation is None:
+                return {"conversation_id": None, "lesson_id": lesson_id, "status": "EMPTY", "summary": "", "messages": []}
+            messages = []
+            for row in connection.execute("""SELECT id,role,content,sources_json,created_at FROM conversation_messages
+              WHERE conversation_id=? ORDER BY id""", (conversation["id"],)).fetchall():
+                item = dict(row)
+                item["sources"] = json.loads(item.pop("sources_json"))
+                messages.append(item)
+            return {"conversation_id": int(conversation["id"]), "lesson_id": lesson_id,
+                    "status": conversation["status"], "summary": conversation["summary"], "messages": messages}
+
+    def get_or_create_conversation(self, lesson_id: int, conversation_id: int | None = None,
+                                   learner_id: int = 1) -> int:
+        with self.connect() as connection:
+            lesson = connection.execute("SELECT id FROM lessons WHERE id=? AND status='PASS'", (lesson_id,)).fetchone()
+            if lesson is None:
+                raise ValueError("Verified lesson not found")
+            if conversation_id:
+                row = connection.execute("""SELECT id FROM lesson_conversations
+                  WHERE id=? AND lesson_id=? AND learner_id=?""", (conversation_id, lesson_id, learner_id)).fetchone()
+                if row is None:
+                    raise ValueError("This follow-up conversation does not belong to the selected lesson")
+                return int(row["id"])
+            connection.execute("""INSERT OR IGNORE INTO lesson_conversations(learner_id,lesson_id)
+              VALUES (?,?)""", (learner_id, lesson_id))
+            row = connection.execute("SELECT id FROM lesson_conversations WHERE learner_id=? AND lesson_id=?",
+                                     (learner_id, lesson_id)).fetchone()
+            return int(row["id"])
+
+    def conversation_context(self, conversation_id: int, max_messages: int = 6) -> dict[str, Any]:
+        max_messages = max(1, min(int(max_messages), 12))
+        with self.connect() as connection:
+            conversation = connection.execute("SELECT summary FROM lesson_conversations WHERE id=?", (conversation_id,)).fetchone()
+            if conversation is None:
+                raise ValueError("Follow-up conversation not found")
+            rows = connection.execute("""SELECT role,content FROM (
+              SELECT id,role,content FROM conversation_messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?
+            ) ORDER BY id""", (conversation_id, max_messages)).fetchall()
+            return {"summary": conversation["summary"], "recent_messages": [dict(row) for row in rows]}
+
+    def save_followup_exchange(
+        self, conversation_id: int, question: str, answer: str, sources: list[dict[str, Any]],
+        summary: str = "", possible_misconception: str = "", learner_id: int = 1,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            conversation = connection.execute("""SELECT c.lesson_id,l.subject,l.concept FROM lesson_conversations c
+              JOIN lessons l ON l.id=c.lesson_id WHERE c.id=? AND c.learner_id=?""",
+              (conversation_id, learner_id)).fetchone()
+            if conversation is None:
+                raise ValueError("Follow-up conversation not found")
+            connection.execute("INSERT INTO conversation_messages(conversation_id,role,content) VALUES (?,'user',?)",
+                               (conversation_id, question))
+            cursor = connection.execute("""INSERT INTO conversation_messages(conversation_id,role,content,sources_json)
+              VALUES (?,'assistant',?,?)""", (conversation_id, answer, json.dumps(sources, ensure_ascii=False)))
+            summary = " ".join(summary.split())[:800]
+            connection.execute("""UPDATE lesson_conversations SET summary=?,status='ACTIVE',updated_at=CURRENT_TIMESTAMP
+              WHERE id=?""", (summary, conversation_id))
+            signal = " ".join(possible_misconception.split())[:300]
+            if signal:
+                key = misconception_key(signal)
+                connection.execute("""INSERT INTO misconceptions
+                  (learner_id,subject,concept,misconception_key,description,source,status)
+                  VALUES (?,?,?,?,?,'followup_signal','POSSIBLE')
+                  ON CONFLICT(learner_id,subject,concept,misconception_key) DO UPDATE SET
+                    occurrence_count=misconceptions.occurrence_count+1,last_seen_at=CURRENT_TIMESTAMP""",
+                  (learner_id, conversation["subject"], conversation["concept"], key, signal))
+            return {"conversation_id": conversation_id, "message_id": int(cursor.lastrowid),
+                    "answer": answer, "sources": sources}
+
+    def clear_conversation(self, lesson_id: int, learner_id: int = 1) -> bool:
+        with self.connect() as connection:
+            conversation = connection.execute("SELECT id FROM lesson_conversations WHERE learner_id=? AND lesson_id=?",
+                                              (learner_id, lesson_id)).fetchone()
+            if conversation is None:
+                return False
+            connection.execute("DELETE FROM conversation_messages WHERE conversation_id=?", (conversation["id"],))
+            connection.execute("""UPDATE lesson_conversations SET summary='',status='CLEARED',updated_at=CURRENT_TIMESTAMP
+              WHERE id=?""", (conversation["id"],))
+            return True
+
+    def progression_context(self, subject: str, concept: str, learner_id: int = 1) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute("""SELECT mastery_score,attempt_count,success_streak,incorrect_streak,
+              progression_stage,recommended_knowledge_level,last_reviewed_at,next_review_at
+              FROM learner_topic_progress WHERE learner_id=? AND lower(subject)=lower(?) AND lower(concept)=lower(?)""",
+              (learner_id, subject, concept)).fetchone()
+            open_misconceptions = [item["description"] for item in connection.execute("""SELECT description FROM misconceptions
+              WHERE learner_id=? AND lower(subject)=lower(?) AND lower(concept)=lower(?) AND status='OPEN'
+              ORDER BY last_seen_at DESC LIMIT 5""", (learner_id, subject, concept)).fetchall()]
+        if row is None:
+            return {"stage": "not_started", "mastery_score": 0.0, "attempt_count": 0,
+                    "recommended_knowledge_level": "beginner", "open_misconceptions": open_misconceptions}
+        return {"stage": row["progression_stage"], "mastery_score": round(float(row["mastery_score"]), 3),
+                "attempt_count": int(row["attempt_count"]), "success_streak": int(row["success_streak"]),
+                "incorrect_streak": int(row["incorrect_streak"]),
+                "recommended_knowledge_level": row["recommended_knowledge_level"],
+                "last_reviewed_at": row["last_reviewed_at"], "next_review_at": row["next_review_at"],
+                "open_misconceptions": open_misconceptions}
+
+    def save_comprehension(
+        self, lesson_id: int, score: int, total: int, answers: list[int], difficulty: str,
+        questions: list[dict[str, Any]] | None = None, learner_id: int = 1,
+    ) -> dict[str, Any]:
         with self.connect() as connection:
             lesson = connection.execute("SELECT subject,concept FROM lessons WHERE id=? AND status='PASS'", (lesson_id,)).fetchone()
             if lesson is None:
                 raise ValueError("Verified lesson not found")
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO comprehension_attempts(lesson_id,score,total,difficulty_feedback,answers_json) VALUES (?,?,?,?,?)",
                 (lesson_id, score, total, difficulty, json.dumps(answers)),
             )
-            latest = score / total if total else 0.0
-            current = connection.execute(
-                "SELECT score,attempts FROM mastery WHERE lower(subject)=lower(?) AND lower(concept)=lower(?)",
-                (lesson["subject"], lesson["concept"]),
-            ).fetchone()
-            new_score = latest if current is None else (0.6 * float(current["score"]) + 0.4 * latest)
-            attempts = 1 if current is None else int(current["attempts"]) + 1
+            progress = connection.execute("""SELECT mastery_score,attempt_count,success_streak,incorrect_streak
+              FROM learner_topic_progress WHERE learner_id=? AND lower(subject)=lower(?) AND lower(concept)=lower(?)""",
+              (learner_id, lesson["subject"], lesson["concept"])).fetchone()
+            decision = progression_update(
+                current_score=float(progress["mastery_score"]) if progress else 0.0,
+                attempt_count=int(progress["attempt_count"]) if progress else 0,
+                success_streak=int(progress["success_streak"]) if progress else 0,
+                incorrect_streak=int(progress["incorrect_streak"]) if progress else 0,
+                score=score, total=total, difficulty_feedback=difficulty,
+            )
             connection.execute(
                 """INSERT INTO mastery(subject,concept,score,attempts,last_reviewed) VALUES (?,?,?,?,CURRENT_TIMESTAMP)
                    ON CONFLICT(subject,concept) DO UPDATE SET score=excluded.score,attempts=excluded.attempts,last_reviewed=CURRENT_TIMESTAMP""",
-                (lesson["subject"], lesson["concept"], new_score, attempts),
+                (lesson["subject"], lesson["concept"], decision.mastery_score, decision.attempt_count),
             )
-            return {"subject": lesson["subject"], "concept": lesson["concept"], "mastery": round(new_score, 3), "attempts": attempts}
+            connection.execute("""INSERT INTO learner_topic_progress
+              (learner_id,subject,concept,mastery_score,attempt_count,success_streak,incorrect_streak,
+               progression_stage,recommended_knowledge_level,last_reviewed_at,next_review_at,updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,CURRENT_TIMESTAMP)
+              ON CONFLICT(learner_id,subject,concept) DO UPDATE SET
+                mastery_score=excluded.mastery_score,attempt_count=excluded.attempt_count,
+                success_streak=excluded.success_streak,incorrect_streak=excluded.incorrect_streak,
+                progression_stage=excluded.progression_stage,
+                recommended_knowledge_level=excluded.recommended_knowledge_level,
+                last_reviewed_at=CURRENT_TIMESTAMP,next_review_at=excluded.next_review_at,updated_at=CURRENT_TIMESTAMP""",
+              (learner_id, lesson["subject"], lesson["concept"], decision.mastery_score,
+               decision.attempt_count, decision.success_streak, decision.incorrect_streak,
+               decision.progression_stage, decision.recommended_knowledge_level, decision.next_review_at))
+            response = {"answers": answers, "questions": questions or []}
+            connection.execute("""INSERT INTO learning_attempts
+              (learner_id,lesson_id,source_attempt_id,attempt_type,score,total,difficulty_feedback,response_json)
+              VALUES (?,?,?,'recall_check',?,?,?,?)""",
+              (learner_id, lesson_id, int(cursor.lastrowid), score, total, difficulty, json.dumps(response, ensure_ascii=False)))
+            connection.execute("""INSERT INTO review_schedule(learner_id,subject,concept,due_at,reason,status,updated_at)
+              VALUES (?,?,?,?,?,'SCHEDULED',CURRENT_TIMESTAMP)
+              ON CONFLICT(learner_id,subject,concept) DO UPDATE SET due_at=excluded.due_at,reason=excluded.reason,
+                status='SCHEDULED',updated_at=CURRENT_TIMESTAMP""",
+              (learner_id, lesson["subject"], lesson["concept"], decision.next_review_at,
+               f"Recall mastery {round(decision.mastery_score * 100)}%"))
+            for index, item in enumerate(questions or []):
+                description = " ".join(str(item.get("question", "")).split())[:300]
+                if not description:
+                    continue
+                key = misconception_key(description)
+                correct = index < len(answers) and answers[index] == item.get("correct_index")
+                if correct:
+                    connection.execute("""UPDATE misconceptions SET status='RESOLVED',resolved_at=CURRENT_TIMESTAMP
+                      WHERE learner_id=? AND lower(subject)=lower(?) AND lower(concept)=lower(?) AND misconception_key=?""",
+                      (learner_id, lesson["subject"], lesson["concept"], key))
+                else:
+                    connection.execute("""INSERT INTO misconceptions
+                      (learner_id,subject,concept,misconception_key,description,source)
+                      VALUES (?,?,?,?,?,'recall_check')
+                      ON CONFLICT(learner_id,subject,concept,misconception_key) DO UPDATE SET
+                        occurrence_count=misconceptions.occurrence_count+1,status='OPEN',last_seen_at=CURRENT_TIMESTAMP,resolved_at=NULL""",
+                      (learner_id, lesson["subject"], lesson["concept"], key, f"Review: {description}"))
+            return {"subject": lesson["subject"], "concept": lesson["concept"],
+                    "mastery": decision.mastery_score, "attempts": decision.attempt_count,
+                    "stage": decision.progression_stage,
+                    "recommended_knowledge_level": decision.recommended_knowledge_level,
+                    "success_streak": decision.success_streak, "next_review_at": decision.next_review_at}
 
     def progress(self) -> dict[str, Any]:
         with self.connect() as connection:
@@ -508,12 +786,22 @@ class Database:
                    FROM lessons"""
             ).fetchone()
             checks = connection.execute("SELECT COUNT(*) AS attempts, COALESCE(SUM(score),0) AS correct, COALESCE(SUM(total),0) AS total FROM comprehension_attempts").fetchone()
-            mastery = [dict(row) for row in connection.execute("SELECT subject,concept,score,attempts,last_reviewed FROM mastery ORDER BY score ASC,last_reviewed DESC").fetchall()]
+            mastery = [dict(row) for row in connection.execute("""SELECT subject,concept,mastery_score AS score,
+              attempt_count AS attempts,success_streak,incorrect_streak,progression_stage,
+              recommended_knowledge_level,last_reviewed_at AS last_reviewed,next_review_at
+              FROM learner_topic_progress WHERE learner_id=1 ORDER BY mastery_score ASC,last_reviewed_at DESC""").fetchall()]
+            due_reviews = connection.execute("""SELECT COUNT(*) AS count FROM review_schedule
+              WHERE learner_id=1 AND status='SCHEDULED' AND datetime(due_at)<=CURRENT_TIMESTAMP""").fetchone()["count"]
+            open_misconceptions = connection.execute("""SELECT COUNT(*) AS count FROM misconceptions
+              WHERE learner_id=1 AND status='OPEN'""").fetchone()["count"]
+            learner = connection.execute("SELECT id,display_name FROM learner_profiles WHERE id=1").fetchone()
             return {
                 "lessons": int(totals["lessons"] or 0), "verified_lessons": int(totals["verified"] or 0),
                 "concepts_studied": int(totals["concepts"] or 0), "check_attempts": int(checks["attempts"] or 0),
                 "check_accuracy": round(float(checks["correct"]) / float(checks["total"]), 3) if checks["total"] else 0,
-                "mastery": mastery,
+                "mastery": mastery, "due_reviews": int(due_reviews or 0),
+                "open_misconceptions": int(open_misconceptions or 0),
+                "learner": dict(learner) if learner else {"id": 1, "display_name": "Default learner"},
             }
 
     def content_inventory(self) -> list[dict[str, Any]]:

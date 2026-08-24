@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#173f35">
-  <title>Learn With Stories</title><script src="/deployment-router.js?v=20260824-3"></script><link rel="stylesheet" href="/styles.css?v=20260824-3"><link rel="stylesheet" href="/uploads.css?v=20260824-3"><link rel="stylesheet" href="/cred-theme.css?v=20260824-3"><link rel="stylesheet" href="/question-preferences.css?v=20260824-5"><link rel="stylesheet" href="/exam.css?v=20260824-3"><link rel="stylesheet" href="/voice.css?v=20260824-6">
+  <title>Learn With Stories</title><script src="/deployment-router.js?v=20260824-3"></script><link rel="stylesheet" href="/styles.css?v=20260824-3"><link rel="stylesheet" href="/uploads.css?v=20260824-3"><link rel="stylesheet" href="/cred-theme.css?v=20260824-3"><link rel="stylesheet" href="/question-preferences.css?v=20260824-7"><link rel="stylesheet" href="/exam.css?v=20260824-3"><link rel="stylesheet" href="/voice.css?v=20260824-6">
 </head>
 <body>
   <div class="app-shell">
@@ -64,6 +64,7 @@
               <section class="lesson-extension hidden" id="lessonExtension"><div><span class="block-label">CONCEPT SUMMARY</span><p id="conceptSummary"></p></div><div><span class="block-label">KEY POINTS</span><ul id="keyPoints"></ul></div><div><span class="block-label">REAL-WORLD EXAMPLE</span><p id="realWorldExample"></p></div><div><span class="block-label">FUN FACT</span><p id="funFact"></p></div></section>
               <div class="truth-grid"><section><span class="block-label">EXAM TRUTH</span><ul id="examTruth"></ul></section><aside><span class="block-label">MEMORY HOOK</span><p id="memoryHook"></p></aside></div>
               <section class="quiz"><div class="quiz-head"><div><span class="block-label">RECALL CHECK</span><h3>Can you retrieve the idea?</h3></div><span>3 questions</span></div><form id="quizForm"><div id="questions"></div><div class="difficulty"><span>How did this lesson feel?</span><label><input type="radio" name="difficulty" value="too_easy"> Too easy</label><label><input type="radio" name="difficulty" value="right" checked> Just right</label><label><input type="radio" name="difficulty" value="too_hard"> Too hard</label></div><button class="primary compact" type="submit">Check my answers</button></form><div id="quizResult" class="quiz-result hidden"></div></section>
+              <section class="followup-panel" id="followupPanel"><div class="followup-head"><div><span class="block-label">CONTINUE THE LESSON</span><h3>Ask a follow-up question</h3><p>The answer stays inside this lesson and its approved book evidence.</p></div><button class="text-button hidden" id="clearFollowups" type="button">Clear conversation</button></div><div class="followup-conversation" id="followupConversation"><div class="followup-empty">Ask about something in the story that you want explained differently or in more detail.</div></div><div class="followup-suggestions hidden" id="followupSuggestions"></div><form class="followup-form" id="followupForm"><textarea id="followupQuestion" rows="2" maxlength="500" required placeholder="For example: Why did that happen in the second year?"></textarea><button class="primary compact" id="followupButton" type="submit">Ask follow-up</button></form><div class="followup-status" id="followupStatus" role="status" aria-live="polite"></div></section>
               <details class="sources"><summary>Source evidence and verification</summary><div id="sourceList"></div></details>
             </article>
           </section>
@@ -133,6 +134,6 @@
       <footer><span>Learn With Stories</span><span>Local • Grounded • Private</span></footer>
     </div>
   </div>
-  <script src="/voice/permission-manager.js?v=20260824-6" defer></script><script src="/voice/speech-recognition-service.js?v=20260824-6" defer></script><script src="/voice/speech-synthesis-service.js?v=20260824-6" defer></script><script src="/voice/voice-controller.js?v=20260824-6" defer></script><script src="/app.js?v=20260824-5" defer></script><script src="/exam.js?v=20260824-3" defer></script>
+  <script src="/voice/permission-manager.js?v=20260824-6" defer></script><script src="/voice/speech-recognition-service.js?v=20260824-6" defer></script><script src="/voice/speech-synthesis-service.js?v=20260824-6" defer></script><script src="/voice/voice-controller.js?v=20260824-6" defer></script><script src="/app.js?v=20260824-7" defer></script><script src="/exam.js?v=20260824-3" defer></script>
 </body>
 </html>
