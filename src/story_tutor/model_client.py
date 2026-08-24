@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -44,9 +46,11 @@ def public_model_error(error: ModelError, provider: str) -> str:
     return f"{label} is unavailable. Review Setup & health and try again."
 
 
-class BaseModelClient:
+class LLMProvider(ABC):
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.last_call_metrics: dict[str, Any] = {}
+        self._last_transport_retries = 0
 
     def _request(self, path: str, payload: dict[str, Any] | None = None, method: str = "POST", api_key: str = "") -> dict[str, Any]:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -57,33 +61,58 @@ class BaseModelClient:
         request = urllib.request.Request(
             f"{self.settings.model_base_url}{path}", data=body, headers=headers, method=method
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.settings.request_timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
+        self._last_transport_retries = 0
+        for attempt in range(self.settings.model_max_retries + 1):
             try:
-                error_body = json.loads(error.read().decode("utf-8")).get("error", {})
-                detail = error_body.get("message", "")
-                error_code = error_body.get("code", "") or error_body.get("type", "")
-            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-                detail, error_code = "", ""
-            raise ModelHTTPError(error.code, detail, str(error_code), error.headers.get("Retry-After", "")) from error
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-            raise ModelError(f"Model service request failed: {error}") from error
+                with urllib.request.urlopen(request, timeout=self.settings.request_timeout_seconds) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                try:
+                    error_body = json.loads(error.read().decode("utf-8")).get("error", {})
+                    detail = error_body.get("message", "")
+                    error_code = error_body.get("code", "") or error_body.get("type", "")
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    detail, error_code = "", ""
+                if 500 <= error.code <= 599 and attempt < self.settings.model_max_retries:
+                    self._last_transport_retries += 1
+                    continue
+                raise ModelHTTPError(error.code, detail, str(error_code), error.headers.get("Retry-After", "")) from error
+            except (urllib.error.URLError, TimeoutError) as error:
+                if attempt < self.settings.model_max_retries:
+                    self._last_transport_retries += 1
+                    continue
+                raise ModelError(f"Model service request failed: {type(error).__name__}") from error
+            except json.JSONDecodeError as error:
+                raise ModelError("Model service returned an unreadable response") from error
+        raise ModelError("Model service request failed after retry")
+
+    @abstractmethod
+    def health(self) -> dict[str, Any]:
+        """Return provider health/model metadata without exposing credentials."""
+
+    @abstractmethod
+    def chat_json(self, system: str, user: str, temperature: float, max_tokens: int) -> dict[str, Any]:
+        """Return one parsed JSON object or raise ModelError."""
 
 
-class OllamaClient(BaseModelClient):
+# Backward-compatible name retained for existing integrations and tests.
+BaseModelClient = LLMProvider
+
+
+class OllamaClient(LLMProvider):
 
     def health(self) -> dict[str, Any]:
         return self._request("/api/tags", payload=None, method="GET")
 
     def chat_json(self, system: str, user: str, temperature: float, max_tokens: int) -> dict[str, Any]:
+        started = time.perf_counter()
         result = self._request("/api/chat", {
             "model": self.settings.model_name,
             "stream": False,
             "format": "json",
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "options": {"temperature": temperature, "num_predict": max_tokens},
+            "keep_alive": self.settings.ollama_keep_alive,
         })
         try:
             content = result["message"]["content"]
@@ -92,10 +121,18 @@ class OllamaClient(BaseModelClient):
             raise ModelError("Model returned invalid structured JSON") from error
         if not isinstance(parsed, dict):
             raise ModelError("Model JSON response must be an object")
+        self.last_call_metrics = {
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "prompt_tokens": int(result.get("prompt_eval_count", max(1, len(system + user) // 4))),
+            "output_tokens": int(result.get("eval_count", max(1, len(content) // 4))),
+            "load_duration_ns": int(result.get("load_duration", 0) or 0),
+            "total_duration_ns": int(result.get("total_duration", 0) or 0),
+            "retry_count": self._last_transport_retries,
+        }
         return parsed
 
 
-class OpenAIClient(BaseModelClient):
+class OpenAIClient(LLMProvider):
     def __init__(self, settings: Settings):
         super().__init__(settings)
         self._keys = list(settings.model_api_keys)
@@ -133,6 +170,8 @@ class OpenAIClient(BaseModelClient):
         return {"models": [{"name": self.settings.model_name}]}
 
     def chat_json(self, system: str, user: str, temperature: float, max_tokens: int) -> dict[str, Any]:
+        started = time.perf_counter()
+        logical_retries = 0
         payload = {
             "model": self.settings.model_name,
             "instructions": system,
@@ -151,10 +190,12 @@ class OpenAIClient(BaseModelClient):
             payload["input"] = payload["input"][:max(4000, len(payload["input"]) // 2)]
             payload["max_output_tokens"] = max(512, max_tokens // 2)
             result = self._request("/responses", payload)
+            logical_retries += 1
         incomplete = result.get("incomplete_details", {}) or {}
         if result.get("status") == "incomplete" and incomplete.get("reason") == "max_output_tokens":
             payload["max_output_tokens"] = min(8192, max(max_tokens + 512, max_tokens * 2))
             result = self._request("/responses", payload)
+            logical_retries += 1
         content = result.get("output_text", "")
         if not content:
             for item in result.get("output", []):
@@ -170,10 +211,22 @@ class OpenAIClient(BaseModelClient):
             raise ModelError("OpenAI returned invalid structured JSON") from error
         if not isinstance(parsed, dict):
             raise ModelError("OpenAI JSON response must be an object")
+        usage = result.get("usage", {}) or {}
+        self.last_call_metrics = {
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "prompt_tokens": int(usage.get("input_tokens", max(1, len(system + user) // 4))),
+            "output_tokens": int(usage.get("output_tokens", max(1, len(content) // 4))),
+            "retry_count": logical_retries + self._last_transport_retries,
+        }
         return parsed
 
 
-def create_model_client(settings: Settings) -> BaseModelClient:
-    if settings.model_provider == "openai":
-        return OpenAIClient(settings)
-    return OllamaClient(settings)
+PROVIDERS: dict[str, type[LLMProvider]] = {"ollama": OllamaClient, "openai": OpenAIClient}
+
+
+def create_model_client(settings: Settings) -> LLMProvider:
+    try:
+        provider = PROVIDERS[settings.model_provider]
+    except KeyError as error:
+        raise ValueError(f"Unsupported LLM provider: {settings.model_provider}") from error
+    return provider(settings)

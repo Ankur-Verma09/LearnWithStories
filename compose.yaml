@@ -7,6 +7,12 @@ services:
       - "127.0.0.1:8766:8766"
     environment:
       OPENAI_API_KEYS_FILE: /run/secrets/openai_api_keys
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-}
     volumes:
       - ./data:/app/data
       - ./config/settings.json:/app/config/settings.json:ro

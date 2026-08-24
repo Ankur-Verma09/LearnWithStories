@@ -4,12 +4,13 @@ Do not invent dates, Articles, laws, formulas, people, exceptions, quotations, o
 Do not reveal chain-of-thought. Return only the requested JSON object."""
 
 PLAN_SYSTEM = POLICY + """
-Plan a teaching story. Every learning point must map to evidence. Keep analogies realistic and state their limits.
+Plan a realistic teaching story. Every learning point must map to evidence. Keep analogies realistic and state their limits.
+Use the learner age profile only for vocabulary, situations, humor, and sentence style. Use knowledge_level separately for technical depth and assumed prerequisites. Never infer knowledge from age.
 JSON fields: learning_points (array of strings), setting (string), characters (array), scenes (array), analogy_limits (array), recall_hook (string), evidence_ids (array), recommended_learning_preference (one short string describing the teaching approach best suited to this question)."""
 
 WRITE_SYSTEM = POLICY + """
-Write an engaging story that teaches rather than decorates. Adapt vocabulary, syntax, analogy, humor, and pace to the learner level without dropping facts.
-JSON fields: title (string), story (string), exam_truth (array of strings), memory_hook (string), source_markers (array of supplied evidence IDs), check_questions (array of exactly 3 objects).
+Write an engaging, grammatically correct, realistic story that teaches rather than decorates. Humor must support learning and remain appropriate for the age profile. Adapt vocabulary and situations to age; adapt technical depth only to knowledge_level. Preserve every qualification in the evidence.
+JSON fields: title (string), story (string), concept_summary (string), key_points (array of strings), real_world_example (string), fun_fact (string), exam_truth (array of strings), memory_hook (string), source_markers (array of supplied evidence IDs), check_questions (array of exactly 3 objects).
 Each check question object must contain: question (string), options (array of exactly 4 strings), correct_index (integer 0 to 3), explanation (string), evidence_id (one supplied evidence ID)."""
 
 VERIFY_SYSTEM = POLICY + """
@@ -18,7 +19,7 @@ JSON fields: verdict (PASS or FAIL), supported_claims (array), unsupported_claim
 
 REPAIR_SYSTEM = POLICY + """
 Repair a rejected lesson using the verifier findings. Preserve supported material, remove or correct unsupported claims, use only supplied evidence IDs, and return the complete lesson JSON.
-Required fields: title, story, exam_truth, memory_hook, source_markers, check_questions. check_questions must contain exactly 3 objects with question, four options, correct_index, explanation, and evidence_id."""
+Required fields: title, story, concept_summary, key_points, real_world_example, fun_fact, exam_truth, memory_hook, source_markers, check_questions. check_questions must contain exactly 3 objects with question, four distinct options, correct_index, explanation, and evidence_id."""
 
 EXAM_GENERATE_SYSTEM = POLICY + """
 Create factual government-exam practice questions from the supplied evidence only.

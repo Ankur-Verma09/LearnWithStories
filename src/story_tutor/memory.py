@@ -17,7 +17,7 @@ class ContextMemoryManager:
     def build(self, subject: str, concept: str, level: int, language: str) -> dict[str, Any]:
         fixed = [
             f"preferred_language={language}",
-            f"understanding_level={level}",
+            f"learner_age={level}",
         ]
         selected: list[dict[str, Any]] = []
         used = approximate_tokens("\n".join(fixed))
@@ -28,4 +28,3 @@ class ContextMemoryManager:
             selected.append({"id": row["id"], "kind": row["kind"], "content": row["content"]})
             used += cost
         return {"facts": fixed, "memories": selected, "approximate_tokens": used}
-

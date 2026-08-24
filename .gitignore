@@ -1,6 +1,12 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+build/
+dist/
 .venv/
 # Local learner records, uploaded books, generated source packs, and backups.
 data/

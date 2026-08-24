@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "age_bands": [
+    {
+      "id": "child",
+      "min_age": 5,
+      "max_age": 9,
+      "vocabulary": "simple everyday words",
+      "sentence_style": "short sentences with one idea at a time",
+      "examples": ["school", "toys", "family", "playgrounds"],
+      "humor": "high, warm, and child-safe",
+      "analogy_frequency": "very frequent"
+    },
+    {
+      "id": "pre_teen",
+      "min_age": 10,
+      "max_age": 12,
+      "vocabulary": "clear middle-school vocabulary",
+      "sentence_style": "short paragraphs with explicit cause and effect",
+      "examples": ["school", "sports", "hobbies", "friends"],
+      "humor": "friendly and frequent",
+      "analogy_frequency": "frequent"
+    },
+    {
+      "id": "teenager",
+      "min_age": 13,
+      "max_age": 17,
+      "vocabulary": "high-school vocabulary",
+      "sentence_style": "medium sentences and connected explanations",
+      "examples": ["school", "sports", "gaming", "friends", "daily life"],
+      "humor": "moderate and age-appropriate",
+      "analogy_frequency": "frequent"
+    },
+    {
+      "id": "young_adult",
+      "min_age": 18,
+      "max_age": 24,
+      "vocabulary": "general adult vocabulary",
+      "sentence_style": "normal adult sentences with clear transitions",
+      "examples": ["college", "first jobs", "technology", "travel", "daily life"],
+      "humor": "moderate and natural",
+      "analogy_frequency": "regular"
+    },
+    {
+      "id": "adult",
+      "min_age": 25,
+      "max_age": 64,
+      "vocabulary": "adult vocabulary without unnecessary jargon",
+      "sentence_style": "normal adult prose with concise explanations",
+      "examples": ["workplace", "driving", "finance", "home", "technology"],
+      "humor": "subtle and realistic",
+      "analogy_frequency": "moderate"
+    },
+    {
+      "id": "mature_adult",
+      "min_age": 65,
+      "max_age": 100,
+      "vocabulary": "clear adult vocabulary",
+      "sentence_style": "measured prose with direct explanations and recap",
+      "examples": ["family", "community", "home", "travel", "everyday decisions"],
+      "humor": "gentle and respectful",
+      "analogy_frequency": "moderate"
+    }
+  ],
+  "knowledge_levels": {
+    "beginner": {
+      "technical_depth": "foundational",
+      "prerequisites": "assume no prior subject knowledge",
+      "terminology": "define every essential technical term",
+      "reasoning": "explain one causal step at a time"
+    },
+    "intermediate": {
+      "technical_depth": "introductory to intermediate",
+      "prerequisites": "assume the fundamentals but briefly reconnect them",
+      "terminology": "use standard terminology and explain uncommon terms",
+      "reasoning": "connect multiple causes, effects, and common exceptions"
+    },
+    "advanced": {
+      "technical_depth": "advanced but bounded by supplied evidence",
+      "prerequisites": "assume strong command of the fundamentals",
+      "terminology": "use precise domain terminology while preserving definitions that affect correctness",
+      "reasoning": "include nuance, qualifications, limitations, and competing interpretations supported by evidence"
+    }
+  }
+}

@@ -47,8 +47,15 @@ CREATE TABLE IF NOT EXISTS lessons (
   concept TEXT NOT NULL,
   question TEXT NOT NULL DEFAULT '',
   understanding_level INTEGER NOT NULL,
+  learner_age INTEGER NOT NULL DEFAULT 18,
+  knowledge_level TEXT NOT NULL DEFAULT 'beginner',
+  learning_profile TEXT NOT NULL DEFAULT 'young_adult',
+  story_style TEXT NOT NULL DEFAULT 'realistic_funny',
+  difficulty TEXT NOT NULL DEFAULT 'standard',
   language TEXT NOT NULL,
+  model_provider TEXT NOT NULL DEFAULT 'ollama',
   model_name TEXT NOT NULL,
+  generation_ms INTEGER NOT NULL DEFAULT 0,
   evidence_json TEXT NOT NULL,
   context_json TEXT NOT NULL,
   lesson_json TEXT NOT NULL,
@@ -191,13 +198,23 @@ CREATE INDEX IF NOT EXISTS idx_exam_questions_order ON exam_questions(exam_id,po
 """
 
 
+class ClosingConnection(sqlite3.Connection):
+    """Commit or roll back like sqlite3.Connection, then release the file handle."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Database:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
@@ -249,6 +266,21 @@ class Database:
             lesson_columns = {row["name"] for row in connection.execute("PRAGMA table_info(lessons)")}
             if "question" not in lesson_columns:
                 connection.execute("ALTER TABLE lessons ADD COLUMN question TEXT NOT NULL DEFAULT ''")
+            lesson_additions = {
+                "learner_age": "INTEGER NOT NULL DEFAULT 18",
+                "knowledge_level": "TEXT NOT NULL DEFAULT 'beginner'",
+                "learning_profile": "TEXT NOT NULL DEFAULT 'young_adult'",
+                "story_style": "TEXT NOT NULL DEFAULT 'realistic_funny'",
+                "difficulty": "TEXT NOT NULL DEFAULT 'standard'",
+                "model_provider": "TEXT NOT NULL DEFAULT 'ollama'",
+                "generation_ms": "INTEGER NOT NULL DEFAULT 0",
+            }
+            age_added = "learner_age" not in lesson_columns
+            for name, definition in lesson_additions.items():
+                if name not in lesson_columns:
+                    connection.execute(f"ALTER TABLE lessons ADD COLUMN {name} {definition}")
+            if age_added:
+                connection.execute("UPDATE lessons SET learner_age=understanding_level")
 
     def ingest(self, records: Iterable[dict[str, Any]]) -> tuple[int, int]:
         inserted = skipped = 0
@@ -414,8 +446,12 @@ class Database:
         with self.connect() as connection:
             cursor = connection.execute(
                 """INSERT OR REPLACE INTO lessons
-                (cache_key,subject,concept,question,understanding_level,language,model_name,evidence_json,context_json,lesson_json,verification_json,status)
-                VALUES (:cache_key,:subject,:concept,:question,:understanding_level,:language,:model_name,:evidence_json,:context_json,:lesson_json,:verification_json,:status)""",
+                (cache_key,subject,concept,question,understanding_level,learner_age,knowledge_level,learning_profile,
+                 story_style,difficulty,language,model_provider,model_name,generation_ms,
+                 evidence_json,context_json,lesson_json,verification_json,status)
+                VALUES (:cache_key,:subject,:concept,:question,:understanding_level,:learner_age,:knowledge_level,:learning_profile,
+                 :story_style,:difficulty,:language,:model_provider,:model_name,:generation_ms,
+                 :evidence_json,:context_json,:lesson_json,:verification_json,:status)""",
                 values,
             )
             return int(cursor.lastrowid)
@@ -430,7 +466,9 @@ class Database:
     def lesson_history(self, limit: int = 10) -> list[sqlite3.Row]:
         with self.connect() as connection:
             return connection.execute(
-                "SELECT id,subject,concept,question,understanding_level,language,status,created_at FROM lessons ORDER BY id DESC LIMIT ?",
+                """SELECT id,subject,concept,question,understanding_level,learner_age,knowledge_level,
+                          learning_profile,story_style,difficulty,language,status,created_at
+                   FROM lessons ORDER BY id DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
 
