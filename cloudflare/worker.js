@@ -24,7 +24,7 @@ function jsonResponse(status, payload) {
 const PUBLIC_ERROR_MESSAGES = {
   GATEWAY_NOT_CONFIGURED: "The secure Dell connection has not been configured yet.",
   DELL_API_UNAVAILABLE: "The Dell service is offline or its secure tunnel is disconnected.",
-  MODEL_OFFLINE: "The model service is unavailable. Review Setup & health and try again.",
+  MODEL_OFFLINE: "The service is offline. Previously verified lessons are still available.",
   INTERNAL_ERROR: "The application could not complete this request. Please try again.",
   DELETE_FAILED: "The selected library item could not be deleted.",
   LESSON_WITHHELD: "The generated lesson was withheld because it did not pass the factual review.",
@@ -74,7 +74,6 @@ async function proxyApi(request, env) {
   const headers = new Headers(request.headers);
   for (const name of [
     "host",
-    "cookie",
     "cf-access-jwt-assertion",
     "x-forwarded-for",
     "x-forwarded-host",
@@ -95,7 +94,6 @@ async function proxyApi(request, env) {
       return sanitizedErrorResponse(response);
     }
     const responseHeaders = securityHeaders(new Headers(response.headers));
-    responseHeaders.delete("set-cookie");
     responseHeaders.set("Cache-Control", "no-store");
     return new Response(response.body, {
       status: response.status,

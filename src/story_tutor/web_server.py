@@ -14,6 +14,10 @@ from urllib.parse import parse_qs, urlparse
 import uuid
 
 from .agent import StoryTutorAgent
+from .auth import (
+    AuthenticatedUser, hash_password, new_session_values, normalize_email,
+    session_cookie, session_hash_from_cookie, verify_password,
+)
 from .config import Settings
 from .converter import ConversionError, convert_document, file_sha256, safe_name
 from .db import Database
@@ -95,7 +99,7 @@ class TutorWebApplication:
             def log_message(self, format: str, *args: Any) -> None:
                 print(f"WEB {self.address_string()} {format % args}")
 
-            def send_json(self, status: HTTPStatus, payload: Any) -> None:
+            def send_json(self, status: HTTPStatus, payload: Any, extra_headers: dict[str, str] | None = None) -> None:
                 data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -103,8 +107,47 @@ class TutorWebApplication:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Frame-Options", "DENY")
+                for name, value in (extra_headers or {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(data)
+
+            def current_user(self, required: bool = True) -> AuthenticatedUser | None:
+                token_hash = session_hash_from_cookie(self.headers.get("Cookie", ""))
+                payload = application.database.session_user(token_hash)
+                if payload is None:
+                    if required:
+                        self.send_json(HTTPStatus.UNAUTHORIZED, {
+                            "status": "AUTH_REQUIRED", "message": "Sign in to continue.",
+                        })
+                    return None
+                return AuthenticatedUser(
+                    id=int(payload["id"]), email=payload["email"], display_name=payload["display_name"],
+                    learner_id=int(payload["learner_id"]), roles=frozenset(payload["roles"]),
+                    csrf_token=payload["csrf_token"],
+                )
+
+            def require_admin(self, user: AuthenticatedUser) -> bool:
+                if user.is_admin:
+                    return True
+                self.send_json(HTTPStatus.FORBIDDEN, {
+                    "status": "FORBIDDEN", "message": "Administrator access is required.",
+                })
+                return False
+
+            def valid_csrf(self, user: AuthenticatedUser) -> bool:
+                if self.headers.get("X-LWS-CSRF", "") == user.csrf_token:
+                    return True
+                self.send_json(HTTPStatus.FORBIDDEN, {
+                    "status": "CSRF_REJECTED", "message": "Your secure session could not be verified. Sign in again.",
+                })
+                return False
+
+            def is_local_request(self) -> bool:
+                host = self.headers.get("Host", "").strip().casefold()
+                return host.startswith("127.0.0.1:") or host == "127.0.0.1" \
+                    or host.startswith("localhost:") or host == "localhost" \
+                    or host.startswith("[::1]:") or host == "[::1]"
 
             def read_json(self) -> dict[str, Any]:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -144,23 +187,44 @@ class TutorWebApplication:
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
+                if path == "/api/auth/status":
+                    self.send_json(HTTPStatus.OK, {"bootstrap_required": application.database.bootstrap_required()})
+                    return
+                if path == "/api/auth/me":
+                    user = self.current_user()
+                    if user:
+                        self.send_json(HTTPStatus.OK, {"user": user.public()})
+                    return
+                user = self.current_user(required=path.startswith("/api/")) if path.startswith("/api/") else None
+                if path.startswith("/api/") and user is None:
+                    return
+                if path == "/api/users":
+                    if self.require_admin(user):
+                        self.send_json(HTTPStatus.OK, application.database.users())
+                    return
                 if path == "/api/config":
-                    self.send_json(HTTPStatus.OK, {
-                        "api_version": 6,
-                        "features": ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "online_examinations", "adaptive_learning_profiles", "progressive_mastery", "lesson_followups"],
+                    payload = {
+                        "api_version": 7,
+                        "features": ["online_examinations", "adaptive_learning_profiles", "progressive_mastery", "lesson_followups", "role_based_access"],
                         "default_level": application.settings.default_learner_age,
                         "default_learner_age": application.settings.default_learner_age,
                         "default_knowledge_level": application.settings.default_knowledge_level,
                         "default_story_style": application.settings.default_story_style,
                         "default_difficulty": application.settings.default_difficulty,
                         "default_language": application.settings.default_language,
-                        "model_provider": application.settings.model_provider,
-                        "model_name": application.settings.model_name,
-                        "configured_api_keys": len(application.settings.model_api_keys) if application.settings.model_provider == "openai" else 0,
-                    })
+                        "user": user.public(),
+                    }
+                    if user.is_admin:
+                        payload.update({
+                            "features": payload["features"] + ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "user_management"],
+                            "model_provider": application.settings.model_provider,
+                            "model_name": application.settings.model_name,
+                            "configured_api_keys": len(application.settings.model_api_keys) if application.settings.model_provider == "openai" else 0,
+                        })
+                    self.send_json(HTTPStatus.OK, payload)
                     return
                 if path == "/api/history":
-                    self.send_json(HTTPStatus.OK, [dict(row) for row in application.database.lesson_history(12)])
+                    self.send_json(HTTPStatus.OK, [dict(row) for row in application.database.lesson_history(12, user.learner_id)])
                     return
                 if path.startswith("/api/lessons/"):
                     parts = path.strip("/").split("/")
@@ -170,7 +234,11 @@ class TutorWebApplication:
                         except ValueError:
                             self.send_json(HTTPStatus.BAD_REQUEST, {"message": "Invalid lesson id"})
                             return
-                        conversation = application.database.conversation_for_lesson(lesson_id)
+                        row = application.database.lesson_detail(lesson_id)
+                        if row is None or int(row["learner_id"]) != user.learner_id:
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Verified lesson not found"})
+                            return
+                        conversation = application.database.conversation_for_lesson(lesson_id, user.learner_id)
                         if conversation is None:
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Verified lesson not found"})
                         else:
@@ -185,7 +253,7 @@ class TutorWebApplication:
                         self.send_json(HTTPStatus.BAD_REQUEST, {"message": "Invalid lesson id"})
                         return
                     row = application.database.lesson_detail(lesson_id)
-                    if row is None:
+                    if row is None or int(row["learner_id"]) != user.learner_id:
                         self.send_json(HTTPStatus.NOT_FOUND, {"message": "Lesson not found"})
                         return
                     if row["status"] != "PASS":
@@ -206,33 +274,43 @@ class TutorWebApplication:
                     })
                     return
                 if path == "/api/progress":
-                    self.send_json(HTTPStatus.OK, application.database.progress())
+                    self.send_json(HTTPStatus.OK, application.database.progress(user.learner_id))
                     return
                 if path == "/api/content":
+                    if not self.require_admin(user): return
                     self.send_json(HTTPStatus.OK, application.database.content_inventory())
                     return
                 if path == "/api/catalog":
                     self.send_json(HTTPStatus.OK, application.database.catalog())
                     return
                 if path == "/api/documents":
+                    if not self.require_admin(user): return
                     self.send_json(HTTPStatus.OK, application.document_inventory())
                     return
                 if path == "/api/library/hierarchy":
+                    if not self.require_admin(user): return
                     query = parse_qs(parsed_url.query)
                     self.send_json(HTTPStatus.OK, application.database.library_hierarchy(
                         search=query.get("search", [""])[0], subject=query.get("subject", [""])[0],
                         document_id=int(query.get("document_id", ["0"])[0] or 0)))
                     return
                 if path == "/api/memories":
-                    self.send_json(HTTPStatus.OK, application.database.memory_inventory())
+                    self.send_json(HTTPStatus.OK, application.database.memory_inventory(
+                        owner_user_id=user.id, is_admin=user.is_admin,
+                    ))
                     return
                 if path == "/api/exams/history":
                     query = parse_qs(parsed_url.query)
-                    self.send_json(HTTPStatus.OK, application.database.exam_history(int(query.get("limit", ["50"])[0])))
+                    self.send_json(HTTPStatus.OK, application.database.exam_history(
+                        int(query.get("limit", ["50"])[0]), user.id,
+                    ))
                     return
                 if path.startswith("/api/exams/"):
                     parts = path.strip("/").split("/")
                     if len(parts) == 3:
+                        if not application.database.exam_owned_by(int(parts[2]), user.id):
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Exam not found"})
+                            return
                         exam = application.database.exam_detail(int(parts[2]))
                         if exam is None:
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Exam not found"})
@@ -243,11 +321,16 @@ class TutorWebApplication:
                     try:
                         response = create_model_client(application.settings).health()
                         models = [item.get("name", "") for item in response.get("models", [])]
-                        self.send_json(HTTPStatus.OK, {"status": "online", "provider": application.settings.model_provider, "models": models, "configured_model": application.settings.model_name})
+                        payload = {"status": "online"}
+                        if user.is_admin:
+                            payload.update({"provider": application.settings.model_provider, "models": models,
+                                            "configured_model": application.settings.model_name})
+                        self.send_json(HTTPStatus.OK, payload)
                     except ModelError as error:
                         self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
                             "status": "MODEL_OFFLINE",
-                            "message": public_model_error(error, application.settings.model_provider),
+                            "message": public_model_error(error, application.settings.model_provider) if user.is_admin
+                            else "The service is currently unavailable. Previously verified lessons are still available.",
                         })
                     return
                 if path.startswith("/api/"):
@@ -260,16 +343,75 @@ class TutorWebApplication:
             def do_POST(self) -> None:
                 path = urlparse(self.path).path
                 try:
+                    if path in {"/api/auth/bootstrap", "/api/auth/login"}:
+                        payload = self.read_json()
+                        email = normalize_email(payload.get("email", ""))
+                        password = str(payload.get("password", ""))
+                        if "@" not in email or email.startswith("@") or email.endswith("@"):
+                            raise ValueError("Enter a valid email address")
+                        if path.endswith("/bootstrap"):
+                            if not self.is_local_request():
+                                self.send_json(HTTPStatus.FORBIDDEN, {
+                                    "status": "LOCAL_SETUP_REQUIRED",
+                                    "message": "Create the first administrator from the Dell's local portal.",
+                                })
+                                return
+                            display_name = " ".join(str(payload.get("display_name", "")).split())[:100]
+                            if len(display_name) < 2:
+                                raise ValueError("Enter the administrator's display name")
+                            account = application.database.create_user(
+                                email, display_name, hash_password(password), ["ADMIN", "STUDENT"], bootstrap=True,
+                            )
+                        else:
+                            account = application.database.user_by_email(email)
+                            if account is None or not verify_password(password, account.pop("password_hash", "")):
+                                self.send_json(HTTPStatus.UNAUTHORIZED, {
+                                    "status": "LOGIN_FAILED", "message": "The email or password is incorrect.",
+                                })
+                                return
+                        token, token_hash, csrf, expires = new_session_values()
+                        application.database.create_session(int(account["id"]), token_hash, csrf, expires)
+                        account["csrf_token"] = csrf
+                        account["is_admin"] = "ADMIN" in account["roles"]
+                        secure = self.headers.get("X-Forwarded-Proto", "").casefold() == "https"
+                        self.send_json(HTTPStatus.CREATED if path.endswith("/bootstrap") else HTTPStatus.OK,
+                                       {"user": account}, {"Set-Cookie": session_cookie(token, secure=secure)})
+                        return
+                    user = self.current_user()
+                    if user is None or not self.valid_csrf(user):
+                        return
+                    if path == "/api/auth/logout":
+                        application.database.revoke_session(session_hash_from_cookie(self.headers.get("Cookie", "")))
+                        secure = self.headers.get("X-Forwarded-Proto", "").casefold() == "https"
+                        self.send_json(HTTPStatus.OK, {"status": "SIGNED_OUT"},
+                                       {"Set-Cookie": session_cookie("", secure=secure, delete=True)})
+                        return
                     if path == "/api/upload":
+                        if not self.require_admin(user): return
                         self.handle_upload()
                         return
                     payload = self.read_json()
+                    if path == "/api/users":
+                        if not self.require_admin(user): return
+                        email = normalize_email(payload.get("email", ""))
+                        display_name = " ".join(str(payload.get("display_name", "")).split())[:100]
+                        if "@" not in email or len(display_name) < 2:
+                            raise ValueError("Enter a valid name and email address")
+                        roles = payload.get("roles", [])
+                        if not isinstance(roles, list):
+                            raise ValueError("Roles must be a list")
+                        created = application.database.create_user(
+                            email, display_name, hash_password(str(payload.get("password", ""))),
+                            [str(role).upper() for role in roles],
+                        )
+                        self.send_json(HTTPStatus.CREATED, created)
+                        return
                     if path == "/api/exams/generate":
                         if not application.generation_lock.acquire(blocking=False):
                             self.send_json(HTTPStatus.CONFLICT, {"status": "BUSY", "message": "Another AI generation task is currently running."})
                             return
                         try:
-                            result = application.exams.generate(payload)
+                            result = application.exams.generate(payload, owner_user_id=user.id)
                         finally:
                             application.generation_lock.release()
                         self.send_json(HTTPStatus.CREATED, result)
@@ -277,6 +419,9 @@ class TutorWebApplication:
                     if path.startswith("/api/exams/"):
                         parts = path.strip("/").split("/")
                         exam_id = int(parts[2]) if len(parts) >= 3 else 0
+                        if not application.database.exam_owned_by(exam_id, user.id):
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Exam not found"})
+                            return
                         result = None
                         if len(parts) == 4 and parts[3] == "start":
                             result = application.database.start_exam(exam_id)
@@ -302,12 +447,14 @@ class TutorWebApplication:
                             self.send_json(HTTPStatus.OK, result)
                         return
                     if path == "/api/topics/manual":
+                        if not self.require_admin(user): return
                         topic = application.database.create_manual_topic(
                             str(payload.get("subject", "")), str(payload.get("name", "")),
                             int(payload.get("document_id", 0) or 0), str(payload.get("parent_id", "")))
                         self.send_json(HTTPStatus.CREATED, topic)
                         return
                     if path.startswith("/api/documents/") and path.endswith("/reprocess"):
+                        if not self.require_admin(user): return
                         document_id = int(path.strip("/").split("/")[2])
                         document = application.database.document(document_id)
                         if document is None:
@@ -344,6 +491,7 @@ class TutorWebApplication:
                                 story_style=str(payload.get("story_style", application.settings.default_story_style)),
                                 difficulty=str(payload.get("difficulty", application.settings.default_difficulty)),
                                 profile_override=str(payload.get("profile_override", "")),
+                                learner_id=user.learner_id, owner_user_id=user.id,
                             )
                         finally:
                             application.generation_lock.release()
@@ -361,7 +509,7 @@ class TutorWebApplication:
                             conversation_value = payload.get("conversation_id")
                             conversation_id = int(conversation_value) if conversation_value not in {None, ""} else None
                             result = application.agent.ask_followup(
-                                int(parts[2]), str(payload.get("question", "")), conversation_id,
+                                int(parts[2]), str(payload.get("question", "")), conversation_id, user.learner_id,
                             )
                         finally:
                             application.generation_lock.release()
@@ -375,6 +523,7 @@ class TutorWebApplication:
                         memory_id = application.database.add_memory(
                             kind=str(payload.get("kind", "preference")), content=content,
                             subject=str(payload.get("subject", "")), concept=str(payload.get("concept", "")), salience=0.8,
+                            owner_user_id=user.id, created_by="USER",
                         )
                         self.send_json(HTTPStatus.CREATED, {"status": "stored", "memory_id": memory_id})
                         return
@@ -384,7 +533,7 @@ class TutorWebApplication:
                             raise ValueError("Invalid lesson check endpoint")
                         lesson_id = int(parts[2])
                         lesson_row = application.database.lesson_detail(lesson_id)
-                        if lesson_row is None or lesson_row["status"] != "PASS":
+                        if lesson_row is None or lesson_row["status"] != "PASS" or int(lesson_row["learner_id"]) != user.learner_id:
                             raise ValueError("Verified lesson not found")
                         lesson = json.loads(lesson_row["lesson_json"])
                         questions = lesson.get("check_questions", [])
@@ -396,7 +545,7 @@ class TutorWebApplication:
                         if difficulty not in {"too_easy", "right", "too_hard"}:
                             raise ValueError("Invalid difficulty feedback")
                         mastery = application.database.save_comprehension(
-                            lesson_id, score, len(questions), answers, difficulty, questions,
+                            lesson_id, score, len(questions), answers, difficulty, questions, user.learner_id,
                         )
                         review = [{"correct_index": item.get("correct_index"), "explanation": item.get("explanation", "")} for item in questions]
                         self.send_json(HTTPStatus.CREATED, {"score": score, "total": len(questions), "review": review, "mastery": mastery})
@@ -411,7 +560,9 @@ class TutorWebApplication:
                 except ModelError as error:
                     self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
                         "status": "MODEL_OFFLINE",
-                        "message": public_model_error(error, application.settings.model_provider),
+                        "message": public_model_error(error, application.settings.model_provider)
+                        if user.is_admin
+                        else "The service is currently unavailable. Previously verified lessons are still available.",
                     })
                 except Exception as error:
                     print(f"WEB ERROR {type(error).__name__}: {error}")
@@ -420,9 +571,37 @@ class TutorWebApplication:
             def do_PATCH(self) -> None:
                 path = urlparse(self.path).path
                 try:
+                    user = self.current_user()
+                    if user is None or not self.valid_csrf(user): return
                     parts = path.strip("/").split("/")
+                    if len(parts) == 3 and parts[:2] == ["api", "memories"]:
+                        payload = self.read_json()
+                        content = " ".join(str(payload.get("content", "")).split())[:300]
+                        if not content: raise ValueError("Context cannot be empty")
+                        if not application.database.update_memory(int(parts[2]), content, user.id, user.is_admin):
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Context item not found"}); return
+                        self.send_json(HTTPStatus.OK, {"status": "UPDATED", "message": "Context updated."})
+                        return
+                    if len(parts) == 3 and parts[:2] == ["api", "users"]:
+                        if not self.require_admin(user): return
+                        payload = self.read_json()
+                        roles = payload.get("roles", [])
+                        if not isinstance(roles, list): raise ValueError("Roles must be a list")
+                        display_name = " ".join(str(payload.get("display_name", "")).split())[:100]
+                        password = str(payload.get("password", ""))
+                        updated = application.database.update_user(
+                            int(parts[2]), display_name=display_name,
+                            roles=[str(role).upper() for role in roles],
+                            is_active=bool(payload.get("is_active", True)),
+                            password_hash=hash_password(password) if password else "",
+                        )
+                        if updated is None:
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "User not found"}); return
+                        self.send_json(HTTPStatus.OK, updated)
+                        return
                     if len(parts) != 3 or parts[:2] != ["api", "topics"]:
                         self.send_json(HTTPStatus.NOT_FOUND, {"message":"Endpoint not found"}); return
+                    if not self.require_admin(user): return
                     payload = self.read_json()
                     updated = application.database.update_topic(parts[2], str(payload.get("action", "")), payload)
                     if updated is None: self.send_json(HTTPStatus.NOT_FOUND, {"message":"Topic not found"}); return
@@ -431,20 +610,27 @@ class TutorWebApplication:
                     self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":"The request contained invalid JSON."})
                 except ValueError as error:
                     self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":public_validation_error(error)})
+                except PermissionError as error:
+                    self.send_json(HTTPStatus.FORBIDDEN, {"status":"FORBIDDEN","message":public_validation_error(error)})
                 except (TypeError, sqlite3.IntegrityError):
                     self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":"The topic change could not be applied. Review the selected values and try again."})
 
             def do_DELETE(self) -> None:
                 path = urlparse(self.path).path
                 try:
+                    user = self.current_user()
+                    if user is None or not self.valid_csrf(user): return
                     parts = path.strip("/").split("/")
                     if len(parts) == 3 and parts[:2] == ["api", "memories"]:
-                        if not application.database.delete_memory(int(parts[2])):
+                        if not application.database.delete_memory(int(parts[2]), user.id, user.is_admin):
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Preference not found"}); return
                         self.send_json(HTTPStatus.OK, {"status": "DELETED", "message": "Preference deleted."})
                         return
                     if len(parts) == 4 and parts[:2] == ["api", "lessons"] and parts[3] == "follow-ups":
-                        if not application.database.clear_conversation(int(parts[2])):
+                        lesson = application.database.lesson_detail(int(parts[2]))
+                        if lesson is None or int(lesson["learner_id"]) != user.learner_id:
+                            self.send_json(HTTPStatus.NOT_FOUND, {"message": "Follow-up conversation not found"}); return
+                        if not application.database.clear_conversation(int(parts[2]), user.learner_id):
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Follow-up conversation not found"})
                             return
                         self.send_json(HTTPStatus.OK, {"status": "CLEARED", "message": "Follow-up conversation cleared."})
@@ -452,6 +638,7 @@ class TutorWebApplication:
                     if len(parts) < 3 or parts[:2] != ["api", "documents"]:
                         self.send_json(HTTPStatus.NOT_FOUND, {"message": "Endpoint not found"})
                         return
+                    if not self.require_admin(user): return
                     document_id = int(parts[2])
                     if len(parts) == 3:
                         document = application.database.delete_document(document_id)
@@ -487,6 +674,8 @@ class TutorWebApplication:
                     self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": public_validation_error(error)})
                 except TypeError:
                     self.send_json(HTTPStatus.BAD_REQUEST, {"status": "INVALID_REQUEST", "message": "The selected item has an invalid identifier."})
+                except PermissionError as error:
+                    self.send_json(HTTPStatus.FORBIDDEN, {"status": "FORBIDDEN", "message": public_validation_error(error)})
                 except Exception as error:
                     print(f"DELETE ERROR {type(error).__name__}: {error}")
                     self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"status": "DELETE_FAILED", "message": "The selected library item could not be deleted."})

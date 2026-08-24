@@ -15,6 +15,20 @@ from .prompts import EXAM_GENERATE_SYSTEM, EXAM_VERIFY_SYSTEM
 
 EXAM_TYPES = {"SUBJECT", "TOPIC", "OVERALL"}
 DIFFICULTIES = {"EASY", "MEDIUM", "HARD", "MIXED"}
+EXAM_PATTERNS = {
+    "GENERAL": {"label": "General practice", "questions": None, "minutes": None, "negative_mark": 0.0,
+                "sections": []},
+    "IBPS_PO_PRELIMS": {"label": "Bank IBPS PO Prelims", "questions": 100, "minutes": 60,
+                        "negative_mark": 0.25,
+                        "sections": ["English Language: 30", "Quantitative Aptitude: 35", "Reasoning Ability: 35"]},
+    "SBI_PO_PRELIMS": {"label": "SBI PO Prelims", "questions": 100, "minutes": 60,
+                       "negative_mark": 0.25,
+                       "sections": ["English Language: 30", "Quantitative Aptitude: 35", "Reasoning Ability: 35"]},
+    "SSC_CGL_TIER1": {"label": "SSC CGL Tier-I", "questions": 100, "minutes": 60,
+                      "negative_mark": 0.50,
+                      "sections": ["General Intelligence & Reasoning: 25", "General Awareness: 25",
+                                   "Quantitative Aptitude: 25", "English Comprehension: 25"]},
+}
 
 
 def clean_text(value: Any, limit: int = 160) -> str:
@@ -52,12 +66,17 @@ class ExamRequest:
     difficulty: str
     question_count: int
     total_time_minutes: int
+    exam_pattern: str
+    negative_mark_per_wrong: float
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], catalog: list[dict[str, Any]]) -> "ExamRequest":
         name = clean_text(payload.get("exam_name"), 120)
         exam_type = clean_text(payload.get("exam_type"), 20).upper()
         difficulty = clean_text(payload.get("difficulty"), 20).upper()
+        exam_pattern = clean_text(payload.get("exam_pattern", "GENERAL"), 40).upper()
+        if exam_pattern not in EXAM_PATTERNS:
+            raise ValueError("Choose a supported target examination")
         raw_subjects = payload.get("subjects", [])
         if isinstance(raw_subjects, str):
             raw_subjects = [raw_subjects]
@@ -76,6 +95,9 @@ class ExamRequest:
             raise ValueError("Choose Subject, Topic, or Overall exam type")
         if difficulty not in DIFFICULTIES:
             raise ValueError("Choose Easy, Medium, Hard, or Mixed difficulty")
+        pattern = EXAM_PATTERNS[exam_pattern]
+        count = int(pattern["questions"] or count)
+        minutes = int(pattern["minutes"] or minutes)
         if not 1 <= count <= 100:
             raise ValueError("Question count must be between 1 and 100")
         if not 1 <= minutes <= 300:
@@ -97,7 +119,8 @@ class ExamRequest:
             raise ValueError("Question count must be at least the number of selected subjects")
         if count > minutes * 60:
             raise ValueError("Total time must allow at least one second per question")
-        return cls(name, exam_type, subjects, topic, difficulty, count, minutes)
+        return cls(name, exam_type, subjects, topic, difficulty, count, minutes,
+                   exam_pattern, float(pattern["negative_mark"]))
 
 
 class ExamService:
@@ -169,7 +192,7 @@ class ExamService:
             local_seen.add(key)
         return accepted
 
-    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def generate(self, payload: dict[str, Any], owner_user_id: int | None = None) -> dict[str, Any]:
         request = ExamRequest.from_payload(payload, self.database.catalog())
         allocations = balanced_allocations(request.subjects, request.question_count, request.total_time_minutes * 60)
         all_questions: list[dict[str, Any]] = []
@@ -185,6 +208,7 @@ class ExamService:
                 batch_count = min(10, allocation["question_count"] - len(questions))
                 generation_input = {
                     "exam_name": request.exam_name, "exam_type": request.exam_type,
+                    "target_exam_pattern": EXAM_PATTERNS[request.exam_pattern],
                     "subject": allocation["subject"], "topic_filter": request.topic or None,
                     "difficulty": request.difficulty, "requested_count": batch_count,
                     "existing_question_texts": [item["question"] for item in all_questions + questions],
@@ -220,6 +244,8 @@ class ExamService:
             "exam_name": request.exam_name, "exam_type": request.exam_type, "difficulty": request.difficulty,
             "topic": request.topic, "total_questions": request.question_count,
             "total_time_minutes": request.total_time_minutes, "model_name": self.settings.model_name,
-            "config_json": json.dumps(payload, ensure_ascii=False),
+            "config_json": json.dumps(payload, ensure_ascii=False), "owner_user_id": owner_user_id,
+            "exam_pattern": request.exam_pattern,
+            "negative_mark_per_wrong": request.negative_mark_per_wrong,
         }, allocations, all_questions)
         return self.database.exam_detail(exam_id, reveal_answers=False)

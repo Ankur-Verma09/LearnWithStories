@@ -160,6 +160,10 @@ http://127.0.0.1:8766
 
 Open **Setup & health** and confirm the configured provider and model are online.
 
+On the first start, the portal asks you to create the first administrator account. Use a unique password with at least ten characters, one letter, and one number. The first account receives both `ADMIN` and `STUDENT` roles so the administrator can also use the learning portal. This one-time setup adopts existing local lessons, progress, exams, and learner context without deleting them.
+
+Create this first administrator at `http://127.0.0.1:8766` on the Dell before publishing or opening the production portal. For takeover protection, the first-administrator endpoint rejects requests arriving through the Cloudflare Worker. Additional users are then created by an administrator under **Setup & health → User access**.
+
 ### Step 6: Initialize content
 
 The web server initializes the database automatically. The CLI can also initialize it explicitly:
@@ -168,13 +172,7 @@ The web server initializes the database automatically. The CLI can also initiali
 & ".\story-tutor.cmd" init
 ```
 
-Optional sample ingestion:
-
-```powershell
-& ".\story-tutor.cmd" ingest "examples\sample_polity.jsonl"
-```
-
-The sample exercises the pipeline. Use verified and legally authorized editions for real exam preparation.
+Use the Knowledge Library to upload verified and legally authorized editions for exam preparation. The repository no longer includes or automatically ingests sample Polity content.
 
 ### Step 7: Upload books
 
@@ -210,6 +208,21 @@ Duplicate titles, authors, topics, and editions are allowed as separate uploads.
 8. Open **Progress** to review mastery.
 
 The subject is required so retrieval remains grounded. The topic is optional; when supplied, retrieval is restricted to that hierarchy. Manual topic entry and administrator corrections remain available even when the model is offline.
+
+### Step 9: Configure users and roles
+
+One user may have one or both supported roles:
+
+| Capability | Student | Admin |
+|---|---:|---:|
+| Learn, ask follow-ups, take exams, view own progress | Yes | Yes |
+| Add, edit, and delete own manually created learner context | Yes | Yes |
+| Delete AI-generated preferences or goals | No | Yes |
+| View/upload/reprocess/delete Knowledge Library books | No | Yes |
+| View active model configuration and provider checklists | No | Yes |
+| Create users and assign multiple roles | No | Yes |
+
+Sign in as an administrator, open **Setup & health**, and use **User access** to create accounts, assign Student/Admin roles, disable access, or reset a password. Authorization is enforced by the Dell APIs as well as by the browser interface. Passwords are stored as salted PBKDF2 hashes; sessions use an HTTP-only cookie plus a request-verification token.
 
 ## 5. RTX 5070 Ti model-PC setup
 
@@ -608,6 +621,8 @@ Progress records include mastery, attempt count, success and incorrect streaks, 
 
 Open **Progress** to see the current stage, mastery percentage, attempts, and scheduled review date for each topic. Existing mastery and recall history are migrated into the default learner profile automatically; books, approvals, lessons, and source references are preserved.
 
+The Progress page also provides a recall-accuracy chart, a deterministic learning-pattern summary, focus topics, and a seven-day study chart. These are derived from the signed-in learner's attempts, difficulty feedback, mastery, misconceptions, and scheduled reviews. They are not guessed directly by the language model.
+
 Progressive behaviour is implemented through stored learner state and bounded prompt context. It does not retrain OpenAI or Ollama after each response, and switching providers does not erase learner progress.
 
 ### Ask follow-up questions after a story
@@ -644,11 +659,14 @@ Administrators can search, filter, expand/collapse, rename, merge, move, approve
 ### Examinations
 
 1. Open **Examination**.
-2. Choose Subject, Topic, or Overall practice.
-3. Select difficulty, question count, and duration.
-4. Generate the grounded examination.
-5. Start it only when ready; timers begin at that point.
-6. Submit to receive marks and evidence-backed analysis.
+2. Select General practice, Bank IBPS PO Prelims, SBI PO Prelims, or SSC CGL Tier-I.
+3. Choose Subject, Topic, or Overall practice and select difficulty.
+4. A named exam preset applies its stored question count, duration, section guidance, and negative marking. General practice keeps question count and time editable.
+5. Generate the grounded examination.
+6. Start it only when ready; timers begin at that point.
+7. Submit to receive marks and evidence-backed analysis.
+
+The presets are practice aids based on published official patterns and may change. Check the latest official IBPS, SBI, or SSC notification before relying on a preset for a live recruitment cycle.
 
 ## 9. Maintenance commands
 
@@ -719,7 +737,6 @@ Keep the terminal open and stop the native server with `Ctrl+C` before returning
 $tutor = "E:\LearnWithStories\story-tutor.cmd"
 
 & $tutor health
-& $tutor ingest "examples\sample_polity.jsonl"
 & $tutor remember "I understand civic examples best." --kind preference --subject Polity
 & $tutor lesson "Article 21" --subject Polity --level 15 --minutes 5
 & $tutor history

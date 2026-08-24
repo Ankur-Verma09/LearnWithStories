@@ -14,14 +14,15 @@ class ContextMemoryManager:
         self.database = database
         self.max_tokens = max_tokens
 
-    def build(self, subject: str, concept: str, level: int, language: str) -> dict[str, Any]:
+    def build(self, subject: str, concept: str, level: int, language: str,
+              owner_user_id: int | None = None) -> dict[str, Any]:
         fixed = [
             f"preferred_language={language}",
             f"learner_age={level}",
         ]
         selected: list[dict[str, Any]] = []
         used = approximate_tokens("\n".join(fixed))
-        for row in self.database.memories(subject, concept):
+        for row in self.database.memories(subject, concept, owner_user_id):
             cost = approximate_tokens(row["content"])
             if used + cost > self.max_tokens:
                 continue

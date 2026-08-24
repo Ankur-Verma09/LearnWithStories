@@ -1,4 +1,5 @@
 const examState={catalog:[],current:null,totalRemaining:0,questionRemaining:0,timer:null,submitting:false,historyLoaded:false};
+const examPatterns={GENERAL:{questions:10,minutes:10,negative:0,hint:'Custom practice: choose your own question count and time.'},IBPS_PO_PRELIMS:{questions:100,minutes:60,negative:.25,hint:'IBPS PO prelims preset: 100 questions, 60 minutes, three separately timed sections, 0.25 negative mark per wrong answer.'},SBI_PO_PRELIMS:{questions:100,minutes:60,negative:.25,hint:'SBI PO prelims preset: 100 questions, 60 minutes, English, Quantitative Aptitude and Reasoning, 0.25 negative mark per wrong answer.'},SSC_CGL_TIER1:{questions:100,minutes:60,negative:.5,hint:'SSC CGL Tier-I preset: 100 questions, 60 minutes, four 25-question sections, 0.50 negative mark per wrong answer.'}};
 const examEl=id=>document.getElementById(id);
 const examClock=seconds=>`${String(Math.max(0,Math.floor(seconds/60))).padStart(2,'0')}:${String(Math.max(0,seconds%60)).padStart(2,'0')}`;
 const examSubmissionKey=()=>globalThis.crypto?.randomUUID?.()||`exam-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -27,6 +28,7 @@ function updateExamType(){
   examEl('examTopic').required=topic;
   if(!topic)examEl('examTopic').value='';
 }
+function updateExamPattern(){const pattern=examPatterns[examEl('examPattern').value]||examPatterns.GENERAL,general=examEl('examPattern').value==='GENERAL';examEl('examQuestionCount').value=pattern.questions;examEl('examTime').value=pattern.minutes;examEl('examQuestionCount').readOnly=!general;examEl('examTime').readOnly=!general;examEl('examPatternHint').textContent=pattern.hint}
 
 function showExamFormError(message){const box=examEl('examFormError');box.textContent=message;box.classList.remove('hidden');}
 function clearExamFormError(){examEl('examFormError').classList.add('hidden');}
@@ -37,7 +39,7 @@ function renderExamSession(exam){
   if(exam.status==='COMPLETED'){renderExamResults(exam);return;}
   examEl('examSetupPanel').classList.add('hidden');examEl('examResults').classList.add('hidden');examEl('examSession').classList.remove('hidden');
   examEl('examSessionName').textContent=exam.exam_name;
-  examEl('examSessionMeta').textContent=`${exam.exam_type} · ${exam.difficulty} · ${exam.total_questions} questions · ${exam.total_time_minutes} minutes`;
+  examEl('examSessionMeta').textContent=`${String(exam.exam_pattern||'GENERAL').replaceAll('_',' ')} · ${exam.exam_type} · ${exam.difficulty} · ${exam.total_questions} questions · ${exam.total_time_minutes} minutes`;
   if(exam.status==='READY'){
     examEl('examSessionStatus').textContent='EXAM READY';examEl('examQuestionNumber').textContent='';examEl('examQuestionSubject').textContent='';
     examEl('examQuestionText').textContent='Your verified question set is ready. The total and per-question timers begin only when you start.';
@@ -79,7 +81,7 @@ async function finishCurrentExam(ask=true){
 
 function renderExamResults(exam){
   stopExamTimer();examState.current=exam;examEl('examSetupPanel').classList.add('hidden');examEl('examSession').classList.add('hidden');examEl('examResults').classList.remove('hidden');
-  examEl('examScoreGrid').innerHTML=[['Marks',`${exam.marks}/${exam.total_questions}`],['Percentage',`${Number(exam.percentage).toFixed(1)}%`],['Correct',exam.correct_count],['Incorrect',exam.incorrect_count],['Unanswered',exam.unanswered_count],['Time taken',examClock(exam.time_taken_seconds)]].map(item=>`<div><span>${item[0]}</span><strong>${item[1]}</strong></div>`).join('');
+  examEl('examScoreGrid').innerHTML=[['Marks',`${exam.marks}/${exam.total_questions}`],['Percentage',`${Number(exam.percentage).toFixed(1)}%`],['Correct',exam.correct_count],['Incorrect',exam.incorrect_count],['Negative / wrong',Number(exam.negative_mark_per_wrong||0).toFixed(2)],['Time taken',examClock(exam.time_taken_seconds)]].map(item=>`<div><span>${item[0]}</span><strong>${item[1]}</strong></div>`).join('');
   examEl('examAnalysis').innerHTML=(exam.analysis||[]).map(item=>{const selected=item.selected_index===null||item.selected_index===undefined?'Not answered':item.options[item.selected_index];const pages=item.source_page_start?` · page ${item.source_page_start}${item.source_page_end&&item.source_page_end!==item.source_page_start?`–${item.source_page_end}`:''}`:'';return `<details class="exam-review ${item.is_correct?'correct':item.answer_status==='ANSWERED'?'incorrect':'unanswered'}"><summary><span>Q${item.position}</span><strong>${escapeHtml(item.question_text)}</strong><b>${item.is_correct?'Correct':item.answer_status==='ANSWERED'?'Incorrect':'Unanswered'}</b></summary><div><p><em>Your answer:</em> ${escapeHtml(selected)}</p><p><em>Correct answer:</em> ${escapeHtml(item.options[item.correct_index])}</p><p>${escapeHtml(item.explanation)}</p><small>${escapeHtml(item.source_title)}${pages} · ${escapeHtml(item.evidence_id)}</small></div></details>`}).join('');
   examEl('examResults').scrollIntoView({behavior:'smooth'});
 }
@@ -89,11 +91,11 @@ async function loadExamHistory(){
   catch(error){examEl('examHistory').innerHTML=`<div class="empty-mini">${escapeHtml(error.message||'Exam history is unavailable.')}</div>`;}
 }
 
-examEl('examType').addEventListener('change',updateExamType);examEl('examSubject').addEventListener('change',refreshExamTopics);
-examEl('examForm').addEventListener('submit',async event=>{event.preventDefault();clearExamFormError();const type=examEl('examType').value;const subjects=type==='OVERALL'?[...examEl('examSubjectChecks').querySelectorAll('input:checked')].map(input=>input.value):[examEl('examSubject').value].filter(Boolean);const payload={exam_name:examEl('examName').value,exam_type:type,subjects,topic:examEl('examTopic').value,difficulty:examEl('examDifficulty').value,question_count:Number(examEl('examQuestionCount').value),total_time_minutes:Number(examEl('examTime').value)};const button=examEl('generateExamButton');button.disabled=true;button.querySelector('span').textContent='Generating and checking questions…';try{renderExamSession(await api('/api/exams/generate',{method:'POST',body:JSON.stringify(payload)}));loadExamHistory();}catch(error){showExamFormError(error.message||'The examination could not be generated. Your configuration is preserved so you can retry.');}finally{button.disabled=false;button.querySelector('span').textContent='Generate examination';}});
+examEl('examType').addEventListener('change',updateExamType);examEl('examPattern').addEventListener('change',updateExamPattern);examEl('examSubject').addEventListener('change',refreshExamTopics);
+examEl('examForm').addEventListener('submit',async event=>{event.preventDefault();clearExamFormError();const type=examEl('examType').value;const subjects=type==='OVERALL'?[...examEl('examSubjectChecks').querySelectorAll('input:checked')].map(input=>input.value):[examEl('examSubject').value].filter(Boolean);const payload={exam_name:examEl('examName').value,exam_pattern:examEl('examPattern').value,exam_type:type,subjects,topic:examEl('examTopic').value,difficulty:examEl('examDifficulty').value,question_count:Number(examEl('examQuestionCount').value),total_time_minutes:Number(examEl('examTime').value)};const button=examEl('generateExamButton');button.disabled=true;button.querySelector('span').textContent='Generating and checking questions…';try{renderExamSession(await api('/api/exams/generate',{method:'POST',body:JSON.stringify(payload)}));loadExamHistory();}catch(error){showExamFormError(error.message||'The examination could not be generated. Your configuration is preserved so you can retry.');}finally{button.disabled=false;button.querySelector('span').textContent='Generate examination';}});
 examEl('nextExamButton').addEventListener('click',async()=>{if(examState.current?.status==='READY'){try{renderExamSession(await api(`/api/exams/${examState.current.id}/start`,{method:'POST',body:'{}'}));}catch(error){examEl('examSessionError').textContent=error.message||'The exam could not be started.';examEl('examSessionError').classList.remove('hidden');}return}submitCurrentAnswer();});examEl('finishExamButton').addEventListener('click',()=>finishCurrentExam(true));
 examEl('newExamButton').addEventListener('click',()=>{stopExamTimer();examState.current=null;examEl('examResults').classList.add('hidden');examEl('examSession').classList.add('hidden');examEl('examSetupPanel').classList.remove('hidden');examEl('examName').focus();});
 examEl('refreshExamHistory').addEventListener('click',loadExamHistory);
 examEl('examHistory').addEventListener('click',async event=>{const button=event.target.closest('[data-exam-id]');if(!button)return;try{renderExamSession(await api(`/api/exams/${button.dataset.examId}`));}catch(error){showExamFormError(error.message||'The saved exam could not be opened.');}});
 window.addEventListener('exam:view',()=>{if(!examState.catalog.length)loadExamCatalog();loadExamHistory();});
-updateExamType();
+updateExamType();updateExamPattern();

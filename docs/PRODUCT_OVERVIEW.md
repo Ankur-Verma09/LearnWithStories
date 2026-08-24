@@ -28,7 +28,7 @@ The learner selects a subject, optionally chooses or types a topic, asks a quest
 
 The administrator uploads authorized books, reviews the extracted hierarchy, corrects topic names, approves useful concepts, and removes incorrect or outdated content.
 
-For the current personal setup, the learner and administrator can be the same person.
+The learner and administrator can be the same person. A user can hold the Student role, the Admin role, or both.
 
 ## Simple product flow
 
@@ -99,6 +99,8 @@ If the system cannot find sufficient approved evidence or cannot verify an answe
 - Shows whether the Dell application is available.
 - Shows which model provider and model are configured.
 - Reports whether OpenAI or the private Ollama service is reachable.
+- Shows model configuration and provider checklists only to administrators.
+- Lets administrators create users and assign one or both roles.
 
 ## How progressive learning works
 
@@ -166,7 +168,7 @@ Changing the model provider does not remove uploaded books, approvals, lesson hi
 
 ## Current boundaries
 
-- The current release uses one local `Default learner` profile.
+- Each signed-in user has an isolated learner profile, progress record, exam history, and manually created context.
 - It does not continuously train or fine-tune the foundation model.
 - Image-only scanned PDFs require OCR before reliable extraction.
 - Generated lessons depend on an available configured model provider.

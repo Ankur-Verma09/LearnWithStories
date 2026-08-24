@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 import sqlite3
 from typing import Any, Iterable
@@ -21,6 +22,33 @@ CREATE TABLE IF NOT EXISTS learner_profiles (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 INSERT OR IGNORE INTO learner_profiles(id,display_name,is_default) VALUES (1,'Default learner',1);
+
+CREATE TABLE IF NOT EXISTS app_users (
+  id INTEGER PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  learner_id INTEGER NOT NULL UNIQUE REFERENCES learner_profiles(id),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK(role IN ('ADMIN','STUDENT')),
+  PRIMARY KEY(user_id,role)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  csrf_token TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS source_chunks (
   id INTEGER PRIMARY KEY,
@@ -47,7 +75,9 @@ CREATE TABLE IF NOT EXISTS memories (
   salience REAL NOT NULL DEFAULT 0.5,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   expires_at TEXT,
-  superseded_by INTEGER REFERENCES memories(id)
+  superseded_by INTEGER REFERENCES memories(id),
+  owner_user_id INTEGER REFERENCES app_users(id),
+  created_by TEXT NOT NULL DEFAULT 'USER' CHECK(created_by IN ('USER','MODEL','MIGRATED'))
 );
 
 CREATE TABLE IF NOT EXISTS lessons (
@@ -236,6 +266,9 @@ CREATE TABLE IF NOT EXISTS exams (
   unanswered_count INTEGER NOT NULL DEFAULT 0,
   marks REAL NOT NULL DEFAULT 0,
   percentage REAL NOT NULL DEFAULT 0,
+  owner_user_id INTEGER REFERENCES app_users(id),
+  exam_pattern TEXT NOT NULL DEFAULT 'GENERAL',
+  negative_mark_per_wrong REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -374,6 +407,23 @@ class Database:
                     connection.execute(f"ALTER TABLE lessons ADD COLUMN {name} {definition}")
             if age_added:
                 connection.execute("UPDATE lessons SET learner_age=understanding_level")
+            memory_columns = {row["name"] for row in connection.execute("PRAGMA table_info(memories)")}
+            if "owner_user_id" not in memory_columns:
+                connection.execute("ALTER TABLE memories ADD COLUMN owner_user_id INTEGER REFERENCES app_users(id)")
+            if "created_by" not in memory_columns:
+                connection.execute("ALTER TABLE memories ADD COLUMN created_by TEXT NOT NULL DEFAULT 'MIGRATED'")
+            connection.execute("""UPDATE memories SET created_by=CASE
+              WHEN kind LIKE 'model_%' THEN 'MODEL' WHEN created_by='' THEN 'MIGRATED' ELSE created_by END""")
+            exam_columns = {row["name"] for row in connection.execute("PRAGMA table_info(exams)")}
+            exam_additions = {
+                "owner_user_id": "INTEGER REFERENCES app_users(id)",
+                "exam_pattern": "TEXT NOT NULL DEFAULT 'GENERAL'",
+                "negative_mark_per_wrong": "REAL NOT NULL DEFAULT 0",
+            }
+            for name, definition in exam_additions.items():
+                if name not in exam_columns:
+                    connection.execute(f"ALTER TABLE exams ADD COLUMN {name} {definition}")
+            connection.execute("DELETE FROM auth_sessions WHERE datetime(expires_at)<=CURRENT_TIMESTAMP")
             connection.execute("""INSERT OR IGNORE INTO learner_topic_progress
               (learner_id,subject,concept,mastery_score,attempt_count,progression_stage,
                recommended_knowledge_level,last_reviewed_at,next_review_at)
@@ -393,6 +443,124 @@ class Database:
               (learner_id,subject,concept,due_at,reason,status)
               SELECT learner_id,subject,concept,COALESCE(next_review_at,CURRENT_TIMESTAMP),'Migrated mastery review','SCHEDULED'
               FROM learner_topic_progress""")
+
+    def bootstrap_required(self) -> bool:
+        with self.connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()["count"]) == 0
+
+    @staticmethod
+    def _user_payload(connection: sqlite3.Connection, user_id: int) -> dict[str, Any] | None:
+        row = connection.execute("""SELECT id,email,display_name,learner_id,is_active,created_at
+          FROM app_users WHERE id=?""", (user_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["roles"] = [item["role"] for item in connection.execute(
+            "SELECT role FROM user_roles WHERE user_id=? ORDER BY role", (user_id,)
+        ).fetchall()]
+        result["is_active"] = bool(result["is_active"])
+        return result
+
+    def create_user(self, email: str, display_name: str, password_hash: str,
+                    roles: list[str], *, bootstrap: bool = False) -> dict[str, Any]:
+        roles = sorted(set(roles))
+        if not roles or any(role not in {"ADMIN", "STUDENT"} for role in roles):
+            raise ValueError("Select at least one valid role")
+        with self.connect() as connection:
+            existing_count = int(connection.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()["count"])
+            if bootstrap and existing_count:
+                raise ValueError("Administrator setup has already been completed")
+            if existing_count == 0:
+                learner_id = 1
+                connection.execute("UPDATE learner_profiles SET display_name=?,is_default=1 WHERE id=1", (display_name,))
+            else:
+                learner = connection.execute(
+                    "INSERT INTO learner_profiles(display_name,is_default) VALUES (?,0)", (display_name,)
+                )
+                learner_id = int(learner.lastrowid)
+            try:
+                cursor = connection.execute("""INSERT INTO app_users(email,display_name,password_hash,learner_id)
+                  VALUES (?,?,?,?)""", (email, display_name, password_hash, learner_id))
+            except sqlite3.IntegrityError as error:
+                raise ValueError("A user with this email already exists") from error
+            user_id = int(cursor.lastrowid)
+            connection.executemany("INSERT INTO user_roles(user_id,role) VALUES (?,?)",
+                                   [(user_id, role) for role in roles])
+            if existing_count == 0:
+                connection.execute("UPDATE memories SET owner_user_id=? WHERE owner_user_id IS NULL", (user_id,))
+                connection.execute("UPDATE exams SET owner_user_id=? WHERE owner_user_id IS NULL", (user_id,))
+            return self._user_payload(connection, user_id) or {}
+
+    def user_by_email(self, email: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT id,password_hash FROM app_users WHERE email=? AND is_active=1", (email,)).fetchone()
+            if row is None:
+                return None
+            result = self._user_payload(connection, int(row["id"])) or {}
+            result["password_hash"] = row["password_hash"]
+            return result
+
+    def users(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            ids = [int(row["id"]) for row in connection.execute("SELECT id FROM app_users ORDER BY display_name COLLATE NOCASE")]
+            return [self._user_payload(connection, user_id) or {} for user_id in ids]
+
+    def update_user(self, user_id: int, *, display_name: str, roles: list[str], is_active: bool,
+                    password_hash: str = "") -> dict[str, Any] | None:
+        roles = sorted(set(roles))
+        if not roles or any(role not in {"ADMIN", "STUDENT"} for role in roles):
+            raise ValueError("Select at least one valid role")
+        with self.connect() as connection:
+            row = connection.execute("SELECT learner_id FROM app_users WHERE id=?", (user_id,)).fetchone()
+            if row is None:
+                return None
+            was_admin = connection.execute(
+                "SELECT 1 FROM user_roles WHERE user_id=? AND role='ADMIN'", (user_id,)
+            ).fetchone() is not None
+            if was_admin and (not is_active or "ADMIN" not in roles):
+                active_admins = int(connection.execute("""SELECT COUNT(DISTINCT u.id) AS count FROM app_users u
+                  JOIN user_roles r ON r.user_id=u.id WHERE u.is_active=1 AND r.role='ADMIN' AND u.id<>?""",
+                  (user_id,)).fetchone()["count"])
+                if active_admins == 0:
+                    raise ValueError("At least one active administrator is required")
+            connection.execute("UPDATE app_users SET display_name=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                               (display_name, int(is_active), user_id))
+            connection.execute("UPDATE learner_profiles SET display_name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                               (display_name, row["learner_id"]))
+            connection.execute("DELETE FROM user_roles WHERE user_id=?", (user_id,))
+            connection.executemany("INSERT INTO user_roles(user_id,role) VALUES (?,?)",
+                                   [(user_id, role) for role in roles])
+            if password_hash:
+                connection.execute("UPDATE app_users SET password_hash=? WHERE id=?", (password_hash, user_id))
+                connection.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
+            if not is_active:
+                connection.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
+            return self._user_payload(connection, user_id)
+
+    def create_session(self, user_id: int, token_hash: str, csrf_token: str, expires_at: str) -> None:
+        with self.connect() as connection:
+            connection.execute("""INSERT INTO auth_sessions(token_hash,user_id,csrf_token,expires_at)
+              VALUES (?,?,?,?)""", (token_hash, user_id, csrf_token, expires_at))
+
+    def session_user(self, token_hash: str) -> dict[str, Any] | None:
+        if not token_hash:
+            return None
+        with self.connect() as connection:
+            row = connection.execute("""SELECT s.user_id,s.csrf_token FROM auth_sessions s
+              JOIN app_users u ON u.id=s.user_id
+              WHERE s.token_hash=? AND u.is_active=1 AND datetime(s.expires_at)>CURRENT_TIMESTAMP""",
+              (token_hash,)).fetchone()
+            if row is None:
+                return None
+            connection.execute("UPDATE auth_sessions SET last_seen_at=CURRENT_TIMESTAMP WHERE token_hash=?", (token_hash,))
+            result = self._user_payload(connection, int(row["user_id"])) or {}
+            result["csrf_token"] = row["csrf_token"]
+            return result
+
+    def revoke_session(self, token_hash: str) -> None:
+        if token_hash:
+            with self.connect() as connection:
+                connection.execute("DELETE FROM auth_sessions WHERE token_hash=?", (token_hash,))
 
     def ingest(self, records: Iterable[dict[str, Any]]) -> tuple[int, int]:
         inserted = skipped = 0
@@ -512,39 +680,61 @@ class Database:
                 ).fetchall()
             return connection.execute("SELECT * FROM source_chunks").fetchall()
 
-    def memories(self, subject: str, concept: str) -> list[sqlite3.Row]:
+    def memories(self, subject: str, concept: str, owner_user_id: int | None = None) -> list[sqlite3.Row]:
         with self.connect() as connection:
+            owner_clause = " AND owner_user_id=?" if owner_user_id is not None else ""
+            params: list[Any] = [subject, concept]
+            if owner_user_id is not None:
+                params.append(owner_user_id)
             return connection.execute(
                 """SELECT * FROM memories
                    WHERE superseded_by IS NULL
                      AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
                      AND (subject='' OR lower(subject)=lower(?))
                      AND (concept='' OR lower(concept)=lower(?))
-                   ORDER BY salience DESC, created_at DESC LIMIT 20""",
-                (subject, concept),
+                   """ + owner_clause + " ORDER BY salience DESC, created_at DESC LIMIT 20",
+                params,
             ).fetchall()
 
-    def add_memory(self, kind: str, content: str, subject: str = "", concept: str = "", salience: float = 0.5) -> int:
+    def add_memory(self, kind: str, content: str, subject: str = "", concept: str = "", salience: float = 0.5,
+                   owner_user_id: int | None = None, created_by: str = "USER") -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO memories(kind,subject,concept,content,salience) VALUES (?,?,?,?,?)",
-                (kind, subject, concept, content, salience),
+                "INSERT INTO memories(kind,subject,concept,content,salience,owner_user_id,created_by) VALUES (?,?,?,?,?,?,?)",
+                (kind, subject, concept, content, salience, owner_user_id, created_by),
             )
             return int(cursor.lastrowid)
 
-    def add_memory_if_absent(self, kind: str, content: str, subject: str = "", concept: str = "", salience: float = 0.5) -> int:
+    def add_memory_if_absent(self, kind: str, content: str, subject: str = "", concept: str = "", salience: float = 0.5,
+                             owner_user_id: int | None = None, created_by: str = "MODEL") -> int:
         with self.connect() as connection:
             existing = connection.execute("""SELECT id FROM memories WHERE superseded_by IS NULL AND kind=?
-              AND lower(subject)=lower(?) AND lower(concept)=lower(?) AND lower(trim(content))=lower(trim(?))""",
-              (kind, subject, concept, content)).fetchone()
+              AND lower(subject)=lower(?) AND lower(concept)=lower(?) AND lower(trim(content))=lower(trim(?))
+              AND owner_user_id IS ?""", (kind, subject, concept, content, owner_user_id)).fetchone()
             if existing:
                 return int(existing["id"])
-            cursor = connection.execute("INSERT INTO memories(kind,subject,concept,content,salience) VALUES (?,?,?,?,?)",
-              (kind, subject, concept, content, salience))
+            cursor = connection.execute("""INSERT INTO memories
+              (kind,subject,concept,content,salience,owner_user_id,created_by) VALUES (?,?,?,?,?,?,?)""",
+              (kind, subject, concept, content, salience, owner_user_id, created_by))
             return int(cursor.lastrowid)
 
-    def delete_memory(self, memory_id: int) -> bool:
+    def update_memory(self, memory_id: int, content: str, actor_user_id: int, is_admin: bool = False) -> bool:
         with self.connect() as connection:
+            row = connection.execute("SELECT owner_user_id,created_by FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if row is None:
+                return False
+            if not is_admin and (row["owner_user_id"] != actor_user_id or row["created_by"] != "USER"):
+                raise PermissionError("Only an administrator can edit AI-generated or another user's context")
+            connection.execute("UPDATE memories SET content=? WHERE id=?", (content, memory_id))
+            return True
+
+    def delete_memory(self, memory_id: int, actor_user_id: int = 0, is_admin: bool = True) -> bool:
+        with self.connect() as connection:
+            row = connection.execute("SELECT owner_user_id,created_by FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if row is None:
+                return False
+            if not is_admin and (row["owner_user_id"] != actor_user_id or row["created_by"] != "USER"):
+                raise PermissionError("Only an administrator can delete AI-generated or another user's context")
             cursor = connection.execute("DELETE FROM memories WHERE id=?", (memory_id,))
             return cursor.rowcount > 0
 
@@ -584,13 +774,15 @@ class Database:
                 (event_type, json.dumps(payload, ensure_ascii=False)),
             )
 
-    def lesson_history(self, limit: int = 10) -> list[sqlite3.Row]:
+    def lesson_history(self, limit: int = 10, learner_id: int | None = None) -> list[sqlite3.Row]:
         with self.connect() as connection:
+            where = " WHERE learner_id=?" if learner_id is not None else ""
+            params: tuple[Any, ...] = (learner_id, limit) if learner_id is not None else (limit,)
             return connection.execute(
                 """SELECT id,subject,concept,question,understanding_level,learner_age,knowledge_level,
                           learning_profile,story_style,difficulty,language,status,created_at
-                   FROM lessons ORDER BY id DESC LIMIT ?""",
-                (limit,),
+                   FROM lessons""" + where + " ORDER BY id DESC LIMIT ?",
+                params,
             ).fetchall()
 
     def lesson_detail(self, lesson_id: int) -> sqlite3.Row | None:
@@ -777,31 +969,83 @@ class Database:
                     "recommended_knowledge_level": decision.recommended_knowledge_level,
                     "success_streak": decision.success_streak, "next_review_at": decision.next_review_at}
 
-    def progress(self) -> dict[str, Any]:
+    def progress(self, learner_id: int = 1) -> dict[str, Any]:
         with self.connect() as connection:
             totals = connection.execute(
                 """SELECT COUNT(*) AS lessons,
                           SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) AS verified,
                           COUNT(DISTINCT CASE WHEN status='PASS' THEN lower(subject)||':'||lower(concept) END) AS concepts
-                   FROM lessons"""
+                   FROM lessons WHERE learner_id=?""", (learner_id,)
             ).fetchone()
-            checks = connection.execute("SELECT COUNT(*) AS attempts, COALESCE(SUM(score),0) AS correct, COALESCE(SUM(total),0) AS total FROM comprehension_attempts").fetchone()
+            checks = connection.execute("""SELECT COUNT(*) AS attempts,COALESCE(SUM(score),0) AS correct,
+              COALESCE(SUM(total),0) AS total FROM learning_attempts WHERE learner_id=?""", (learner_id,)).fetchone()
             mastery = [dict(row) for row in connection.execute("""SELECT subject,concept,mastery_score AS score,
               attempt_count AS attempts,success_streak,incorrect_streak,progression_stage,
               recommended_knowledge_level,last_reviewed_at AS last_reviewed,next_review_at
-              FROM learner_topic_progress WHERE learner_id=1 ORDER BY mastery_score ASC,last_reviewed_at DESC""").fetchall()]
+              FROM learner_topic_progress WHERE learner_id=? ORDER BY mastery_score ASC,last_reviewed_at DESC""",
+              (learner_id,)).fetchall()]
             due_reviews = connection.execute("""SELECT COUNT(*) AS count FROM review_schedule
-              WHERE learner_id=1 AND status='SCHEDULED' AND datetime(due_at)<=CURRENT_TIMESTAMP""").fetchone()["count"]
+              WHERE learner_id=? AND status='SCHEDULED' AND datetime(due_at)<=CURRENT_TIMESTAMP""",
+              (learner_id,)).fetchone()["count"]
             open_misconceptions = connection.execute("""SELECT COUNT(*) AS count FROM misconceptions
-              WHERE learner_id=1 AND status='OPEN'""").fetchone()["count"]
-            learner = connection.execute("SELECT id,display_name FROM learner_profiles WHERE id=1").fetchone()
+              WHERE learner_id=? AND status='OPEN'""", (learner_id,)).fetchone()["count"]
+            learner = connection.execute("SELECT id,display_name FROM learner_profiles WHERE id=?", (learner_id,)).fetchone()
+            timeline = [dict(row) for row in connection.execute("""SELECT date(created_at) AS day,
+              COUNT(*) AS attempts,SUM(score) AS correct,SUM(total) AS total,
+              ROUND(CASE WHEN SUM(total)>0 THEN CAST(SUM(score) AS REAL)/SUM(total) ELSE 0 END,3) AS accuracy
+              FROM learning_attempts WHERE learner_id=? GROUP BY date(created_at) ORDER BY day DESC LIMIT 30""",
+              (learner_id,)).fetchall()][::-1]
+            feedback = {row["difficulty_feedback"]: int(row["count"]) for row in connection.execute("""SELECT
+              difficulty_feedback,COUNT(*) AS count FROM learning_attempts WHERE learner_id=? GROUP BY difficulty_feedback""",
+              (learner_id,)).fetchall()}
+            recent = [float(row["accuracy"]) for row in timeline[-3:]]
+            earlier = [float(row["accuracy"]) for row in timeline[-6:-3]]
+            recent_average = sum(recent) / len(recent) if recent else 0.0
+            earlier_average = sum(earlier) / len(earlier) if earlier else recent_average
+            delta = recent_average - earlier_average
+            trend = "improving" if delta >= 0.08 else "needs reinforcement" if delta <= -0.08 else "steady"
+            weak = [item for item in mastery if float(item["score"]) < 0.65]
+            strong = [item for item in reversed(mastery) if float(item["score"]) >= 0.75]
+            pattern_summary = (
+                "Start with short foundation reviews and repeat missed concepts." if not timeline else
+                f"Performance is {trend}. " + (
+                    "The learner often reports that lessons feel too hard; use shorter examples and more recall practice."
+                    if feedback.get("too_hard", 0) > feedback.get("too_easy", 0)
+                    else "The learner often reports that lessons feel too easy; add more challenging application questions."
+                    if feedback.get("too_easy", 0) > feedback.get("too_hard", 0)
+                    else "Current lesson difficulty is generally balanced."
+                )
+            )
+            scheduled = [dict(row) for row in connection.execute("""SELECT subject,concept,due_at,reason
+              FROM review_schedule WHERE learner_id=? AND status='SCHEDULED' ORDER BY datetime(due_at) LIMIT 14""",
+              (learner_id,)).fetchall()]
+            candidates = scheduled or [{"subject": item["subject"], "concept": item["concept"],
+                                        "due_at": "", "reason": "Strengthen low mastery"} for item in weak]
+            study_plan = []
+            for index in range(7):
+                item = candidates[index % len(candidates)] if candidates else None
+                study_plan.append({
+                    "day": (date.today() + timedelta(days=index)).isoformat(),
+                    "subject": item["subject"] if item else "New learning",
+                    "concept": item["concept"] if item else "Choose an approved topic",
+                    "activity": ("Review and complete a recall check" if item else "Create one verified lesson"),
+                    "minutes": 20 if item else 15,
+                })
             return {
                 "lessons": int(totals["lessons"] or 0), "verified_lessons": int(totals["verified"] or 0),
                 "concepts_studied": int(totals["concepts"] or 0), "check_attempts": int(checks["attempts"] or 0),
                 "check_accuracy": round(float(checks["correct"]) / float(checks["total"]), 3) if checks["total"] else 0,
                 "mastery": mastery, "due_reviews": int(due_reviews or 0),
                 "open_misconceptions": int(open_misconceptions or 0),
-                "learner": dict(learner) if learner else {"id": 1, "display_name": "Default learner"},
+                "learner": dict(learner) if learner else {"id": learner_id, "display_name": "Learner"},
+                "timeline": timeline,
+                "learning_pattern": {
+                    "trend": trend, "summary": pattern_summary,
+                    "strongest_topics": [{"subject": item["subject"], "concept": item["concept"], "score": item["score"]} for item in strong[:3]],
+                    "focus_topics": [{"subject": item["subject"], "concept": item["concept"], "score": item["score"]} for item in weak[:3]],
+                    "difficulty_feedback": feedback,
+                },
+                "study_plan": study_plan,
             }
 
     def content_inventory(self) -> list[dict[str, Any]]:
@@ -898,20 +1142,32 @@ class Database:
             connection.execute("UPDATE source_documents SET records=? WHERE id=?", (remaining, document_id))
             return int(cursor.rowcount)
 
-    def memory_inventory(self, limit: int = 50) -> list[dict[str, Any]]:
+    def memory_inventory(self, limit: int = 50, owner_user_id: int | None = None,
+                         is_admin: bool = True) -> list[dict[str, Any]]:
         with self.connect() as connection:
+            where = "WHERE m.superseded_by IS NULL"
+            params: list[Any] = []
+            if not is_admin:
+                where += " AND m.owner_user_id=?"
+                params.append(owner_user_id)
+            params.append(limit)
             return [dict(row) for row in connection.execute(
-                "SELECT id,kind,subject,concept,content,salience,created_at FROM memories WHERE superseded_by IS NULL ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                f"""SELECT m.id,m.kind,m.subject,m.concept,m.content,m.salience,m.created_at,
+                  m.owner_user_id,m.created_by,u.display_name AS owner_name
+                  FROM memories m LEFT JOIN app_users u ON u.id=m.owner_user_id
+                  {where} ORDER BY m.created_at DESC LIMIT ?""", params,
             ).fetchall()]
 
     def create_exam(self, values: dict[str, Any], allocations: list[dict[str, Any]], questions: list[dict[str, Any]]) -> int:
         if len(questions) != int(values["total_questions"]):
             raise ValueError("Generated question count does not match the exam configuration")
+        values = {"owner_user_id": None, "exam_pattern": "GENERAL", "negative_mark_per_wrong": 0.0, **values}
         with self.connect() as connection:
             cursor = connection.execute("""INSERT INTO exams
-              (exam_name,exam_type,difficulty,topic,total_questions,total_time_minutes,model_name,config_json,status)
-              VALUES (:exam_name,:exam_type,:difficulty,:topic,:total_questions,:total_time_minutes,:model_name,:config_json,'READY')""", values)
+              (exam_name,exam_type,difficulty,topic,total_questions,total_time_minutes,model_name,config_json,status,
+               owner_user_id,exam_pattern,negative_mark_per_wrong)
+              VALUES (:exam_name,:exam_type,:difficulty,:topic,:total_questions,:total_time_minutes,:model_name,:config_json,
+               'READY',:owner_user_id,:exam_pattern,:negative_mark_per_wrong)""", values)
             exam_id = int(cursor.lastrowid)
             for position, item in enumerate(allocations, 1):
                 connection.execute("INSERT INTO exam_subjects(exam_id,position,subject,question_count,time_seconds) VALUES (?,?,?,?,?)",
@@ -933,14 +1189,22 @@ class Database:
         connection.execute("INSERT INTO events(event_type,payload_json) VALUES (?,?)",
                            (event_type, json.dumps(payload, ensure_ascii=False)))
 
-    def exam_history(self, limit: int = 50) -> list[dict[str, Any]]:
+    def exam_history(self, limit: int = 50, owner_user_id: int | None = None) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
         with self.connect() as connection:
+            where = "WHERE e.owner_user_id=?" if owner_user_id is not None else ""
+            params: tuple[Any, ...] = (owner_user_id, limit) if owner_user_id is not None else (limit,)
             return [dict(row) for row in connection.execute("""SELECT e.id,e.exam_name,e.exam_type,e.difficulty,e.topic,
               e.total_questions,e.total_time_minutes,e.status,e.correct_count,e.incorrect_count,e.unanswered_count,
-              e.marks,e.percentage,e.time_taken_seconds,e.created_at,e.submitted_at,
+              e.marks,e.percentage,e.time_taken_seconds,e.created_at,e.submitted_at,e.exam_pattern,e.negative_mark_per_wrong,
               GROUP_CONCAT(s.subject, ' · ') AS subjects
-              FROM exams e LEFT JOIN exam_subjects s ON s.exam_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT ?""", (limit,))]
+              FROM exams e LEFT JOIN exam_subjects s ON s.exam_id=e.id """ + where +
+              " GROUP BY e.id ORDER BY e.id DESC LIMIT ?", params)]
+
+    def exam_owned_by(self, exam_id: int, owner_user_id: int) -> bool:
+        with self.connect() as connection:
+            return connection.execute("SELECT 1 FROM exams WHERE id=? AND owner_user_id=?",
+                                      (exam_id, owner_user_id)).fetchone() is not None
 
     @staticmethod
     def _elapsed_seconds(connection: sqlite3.Connection, timestamp: str | None) -> int:
@@ -1014,10 +1278,12 @@ class Database:
           FROM exam_answers WHERE exam_id=?""", (exam_id,)).fetchone()
         correct = int(counts["correct"] or 0); incorrect = int(counts["incorrect"] or 0); unanswered = int(counts["unanswered"] or 0)
         total = int(exam["total_questions"]); elapsed = min(int(exam["total_time_minutes"]) * 60, self._elapsed_seconds(connection, exam["started_at"]))
-        percentage = round((correct / total) * 100, 2) if total else 0
+        negative = float(exam["negative_mark_per_wrong"] or 0)
+        marks = round(correct - (incorrect * negative), 2)
+        percentage = round((marks / total) * 100, 2) if total else 0
         connection.execute("""UPDATE exams SET status='COMPLETED',submitted_at=CURRENT_TIMESTAMP,time_taken_seconds=?,
           correct_count=?,incorrect_count=?,unanswered_count=?,marks=?,percentage=? WHERE id=?""",
-          (elapsed, correct, incorrect, unanswered, float(correct), percentage, exam_id))
+          (elapsed, correct, incorrect, unanswered, marks, percentage, exam_id))
         self._record_event(connection, "exam_completed", {"exam_id": exam_id, "correct": correct, "total": total})
         return self._exam_payload(connection, exam_id, True) or {}
 

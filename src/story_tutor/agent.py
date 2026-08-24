@@ -74,7 +74,7 @@ class StoryTutorAgent:
         self, subject: str, concept: str, level: int, language: str, minutes: int,
         refresh: bool = False, question: str = "", *, age: int | None = None,
         knowledge_level: str = "", story_style: str = "", difficulty: str = "",
-        profile_override: str = "",
+        profile_override: str = "", learner_id: int = 1, owner_user_id: int | None = None,
     ) -> dict[str, Any]:
         learner_age = int(age if age is not None else level)
         knowledge_level = knowledge_level or self.settings.default_knowledge_level
@@ -98,8 +98,8 @@ class StoryTutorAgent:
             return {"status": "NEEDS_EVIDENCE", "message": f"No approved source material matched this question{scope}."}
 
         lesson_focus = concept or question
-        context = self.memory.build(subject, lesson_focus, learner_age, language)
-        context["progression"] = self.database.progression_context(subject, lesson_focus)
+        context = self.memory.build(subject, lesson_focus, learner_age, language, owner_user_id)
+        context["progression"] = self.database.progression_context(subject, lesson_focus, learner_id)
         cache_context = {
             "facts": list(context.get("facts", [])),
             "memories": [item for item in context.get("memories", []) if item.get("kind") != "model_preference"],
@@ -111,6 +111,7 @@ class StoryTutorAgent:
             "story_style": story_style, "difficulty": difficulty,
             "language": language, "minutes": minutes,
             "provider": self.settings.model_provider, "model": self.settings.model_name,
+            "learner_id": learner_id,
             "evidence": evidence, "context": cache_context,
         }
         cache_key = stable_cache_key(cache_material)
@@ -140,7 +141,10 @@ class StoryTutorAgent:
         )
         generated_preference = " ".join(str(plan.get("recommended_learning_preference", "")).split())[:300]
         if generated_preference:
-            self.database.add_memory_if_absent("model_preference", generated_preference, subject, lesson_focus, 0.65)
+            self.database.add_memory_if_absent(
+                "model_preference", generated_preference, subject, lesson_focus, 0.65,
+                owner_user_id=owner_user_id, created_by="MODEL",
+            )
         output_budget = {2: 900, 5: 1600, 10: 2600}[minutes]
         lesson = self._model_call(
             "write", request_id, WRITE_SYSTEM, self.prompts.write(common, plan),
@@ -191,6 +195,7 @@ class StoryTutorAgent:
             "context_json": json.dumps(context, ensure_ascii=False),
             "lesson_json": json.dumps(lesson, ensure_ascii=False),
             "verification_json": json.dumps(verification, ensure_ascii=False), "status": status,
+            "learner_id": learner_id,
         })
         self.database.record_event("lesson_generation", {
             "request_id": request_id, "lesson_id": lesson_id, "status": status,
@@ -221,7 +226,7 @@ class StoryTutorAgent:
         if len(question) > 500:
             raise ValueError("Follow-up questions must be 500 characters or fewer")
         lesson_row = self.database.lesson_detail(lesson_id)
-        if lesson_row is None or lesson_row["status"] != "PASS":
+        if lesson_row is None or lesson_row["status"] != "PASS" or int(lesson_row["learner_id"]) != learner_id:
             raise ValueError("Verified lesson not found")
 
         conversation_id = self.database.get_or_create_conversation(lesson_id, conversation_id, learner_id)
