@@ -1,0 +1,61 @@
+.subject-first { display:block; margin:27px 0 12px; }
+.subject-first select { padding:15px; font-weight:750; }
+.subject-first small { display:block; color:#85908a; font-size:11px; margin-top:7px; }
+.topic-field { margin-top:15px; }
+.control-row { grid-template-columns:1fr 1fr; }
+.form-error { padding:10px 12px; margin:12px 0; background:#fff0ec; border:1px solid #e1aaa2; border-radius:10px; color:var(--red); font-size:12px; font-weight:700; }
+.upload-card { padding:25px; margin-top:20px; }
+.upload-card h2,.library-card h2 { font:500 24px var(--serif); margin:0; }
+.upload-card>.section-row>span { color:var(--muted); font-size:11px; }
+.file-drop { display:grid; place-items:center; text-align:center; min-height:135px; margin:20px 0; border:2px dashed #b9cabe; border-radius:17px; background:#f2f7f2; cursor:pointer; transition:.2s; }
+.file-drop:hover { border-color:var(--green); background:#eaf3ec; }
+.file-drop input { position:absolute; width:1px; height:1px; opacity:0; }
+.file-drop strong { font:21px var(--serif); color:var(--green); }
+.file-drop small { color:var(--muted); }
+.upload-fields { display:grid; grid-template-columns:1fr 1fr; gap:13px; }
+.authorization { margin:18px 0; }
+.upload-status { margin-top:14px; padding:12px 14px; border-radius:11px; font-size:12px; font-weight:700; }
+.upload-status.working { background:#fff6df; color:#7f6219; }
+.upload-status.success { background:#e6f2e8; color:var(--green); }
+.upload-status.error { background:#fff0ec; color:var(--red); }
+.document-list { display:grid; gap:10px; margin-top:17px; }
+.document-row { display:grid; grid-template-columns:52px 1fr auto; gap:13px; align-items:start; padding:16px; border:1px solid var(--line); border-radius:13px; }
+.file-type { display:grid; place-items:center; height:42px; border-radius:10px; background:var(--sage); color:var(--green); font-size:10px; font-weight:900; }
+.document-row strong { display:block; font:16px var(--serif); }
+.document-row small { display:block; color:var(--muted); }
+.document-row p { margin:5px 0 0; color:var(--red); font-size:11px; }
+.document-status { padding:5px 8px; border-radius:999px; font-size:9px; font-weight:900; letter-spacing:.06em; }
+.document-status.ready { background:var(--sage); color:var(--green); }
+.document-status.failed { background:#fff0ec; color:var(--red); }
+.document-status.processing { background:#fff6df; color:#7f6219; }
+.document-status.on_disk { background:#eee8dc; color:#685f52; }
+.document-filters { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:18px; }
+.hierarchy-card { min-width:0; }
+.library-toolbar { display:grid; grid-template-columns:minmax(220px,2fr) minmax(130px,1fr) minmax(150px,1fr) auto; gap:10px; align-items:center; margin:18px 0 12px; }
+.hierarchy-tree { height:520px; overflow:auto; overscroll-behavior:contain; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.35); }
+.tree-book+.tree-book { border-top:1px solid var(--line); }
+.hierarchy-node,.search-result { display:flex; gap:10px; align-items:center; min-height:54px; padding:9px 12px 9px calc(12px + var(--depth,0)*18px); border-bottom:1px solid rgba(50,44,36,.08); }
+.hierarchy-node[data-depth="1"] { --depth:1; }.hierarchy-node[data-depth="2"] { --depth:2; }.hierarchy-node[data-depth="3"] { --depth:3; }.hierarchy-node[data-depth="4"] { --depth:4; }
+.hierarchy-node:hover,.search-result:hover { background:rgba(255,255,255,.58); }
+.subject-book { position:sticky; top:0; z-index:1; background:#f3efe7; }
+.node-toggle { width:29px; height:29px; flex:0 0 29px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+.node-toggle:disabled { border-color:transparent; background:transparent; }
+.node-copy { min-width:0; flex:1; }.node-copy strong,.node-copy small,.search-result strong,.search-result small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.node-copy small,.search-result small { color:var(--muted); font-size:11px; margin-top:3px; }
+.node-count,.approval { flex:0 0 auto; font-size:10px; padding:4px 7px; border-radius:99px; background:#e9e4da; }.approval.approved { background:var(--sage); color:var(--green); }.approval.rejected,.approval.needs_review { background:#fff0ec; color:var(--red); }
+.review-topic { flex:0 0 auto; border:0; background:transparent; color:var(--green); text-decoration:underline; }
+.search-result { align-items:center; }.search-result strong { flex:0 1 240px; }.search-result small { flex:1; }
+.library-state { padding:28px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:13px; }.library-state.failed { color:var(--red); background:#fff0ec; }
+.document-main { min-width:0; }
+.document-actions { display:grid; justify-items:end; gap:9px; }
+.danger-button,.book-topic button { border:1px solid #713733; border-radius:9px; background:transparent; color:#ff9a94; padding:7px 9px; font-size:10px; font-weight:800; cursor:pointer; }
+.danger-button:hover,.book-topic button:hover { background:#341514; }
+.book-topics { margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }
+.book-topics summary { color:var(--green); font-size:11px; font-weight:800; cursor:pointer; }
+.topic-book-filter { margin:10px 0; padding:9px 11px; font-size:12px; }
+.book-topic-list { max-height:300px; overflow:auto; display:grid; gap:5px; padding-right:4px; }
+.book-topic { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 9px; background:var(--surface2); border-radius:8px; font-size:11px; }
+.book-topic span { overflow-wrap:anywhere; }
+@media(max-width:900px) { .library-toolbar { grid-template-columns:1fr 1fr; }.library-toolbar input { grid-column:1/-1; }.hierarchy-tree { height:460px; } }
+@media(max-width:760px) { .upload-fields,.document-filters,.library-toolbar { grid-template-columns:1fr; } .library-toolbar input { grid-column:auto; }.document-row { grid-template-columns:45px 1fr; } .document-actions { grid-column:2; justify-items:start; grid-auto-flow:column; }.hierarchy-tree { height:62vh; min-height:360px; }.hierarchy-node,.search-result { flex-wrap:wrap; padding-left:10px }.node-copy { min-width:calc(100% - 50px); }.node-count,.approval,.review-topic { margin-left:39px; }.search-result strong,.search-result small { flex-basis:100%; white-space:normal; } }
+.hierarchy-card,.library-card { max-width:100%; }
+html,body { overflow-x:hidden; }

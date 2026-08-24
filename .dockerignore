@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+data
+secrets
+work
+tests
+config/settings.json

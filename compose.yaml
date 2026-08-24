@@ -1,0 +1,18 @@
+services:
+  learn-with-stories:
+    build: .
+    container_name: learn-with-stories
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8766:8766"
+    environment:
+      OPENAI_API_KEYS_FILE: /run/secrets/openai_api_keys
+    volumes:
+      - ./data:/app/data
+      - ./config/settings.json:/app/config/settings.json:ro
+    secrets:
+      - openai_api_keys
+
+secrets:
+  openai_api_keys:
+    file: ./secrets/openai_api_keys.txt

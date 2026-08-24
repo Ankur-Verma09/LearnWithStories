@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+# Local learner records, uploaded books, generated source packs, and backups.
+data/
+config/settings.json
+work/
+secrets/
