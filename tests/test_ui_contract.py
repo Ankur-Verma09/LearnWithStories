@@ -40,7 +40,9 @@ class ResponsiveLibraryContractTests(unittest.TestCase):
         router = (ROOT / "web/deployment-router.js").read_text(encoding="utf-8")
         self.assertIn("learnwithstories.pages.dev", router)
         self.assertIn("learn-with-stories.aaankurankur.workers.dev", router)
-        self.assertIn('src="/deployment-router.js"', html)
+        self.assertIn('src="/deployment-router.js?v=', html)
+        self.assertIn('src="/app.js?v=', html)
+        self.assertTrue((ROOT / "web/_headers").exists())
 
 
 if __name__ == "__main__": unittest.main()

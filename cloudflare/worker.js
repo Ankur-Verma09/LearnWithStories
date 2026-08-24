@@ -119,6 +119,9 @@ export default {
 
     const response = await env.ASSETS.fetch(request);
     const headers = securityHeaders(new Headers(response.headers));
+    if (/^(?:text\/(?:html|css|javascript)|application\/javascript)/i.test(headers.get("Content-Type") || "")) {
+      headers.set("Cache-Control", "no-cache, max-age=0, must-revalidate");
+    }
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
