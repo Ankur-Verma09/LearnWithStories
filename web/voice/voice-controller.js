@@ -123,7 +123,8 @@
     _showRecognitionError(error) {
       const code = String(error?.code || "recognition_failed");
       this.recognition.stop();
-      this._showMicStatus(error?.message || "Voice input failed. Please retry or type the question.", "error");
+      const state = code === "network" ? "unavailable" : "error";
+      this._showMicStatus(error?.message || "Voice input failed. Please retry or type the question.", state);
       this.retryButton.classList.toggle("hidden", noRetryCodes.has(code));
     }
 

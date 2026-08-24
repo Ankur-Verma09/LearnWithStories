@@ -11,6 +11,8 @@
 .voice-input-status[data-state="listening"]:before{background:var(--green);box-shadow:0 0 0 5px rgba(231,255,98,.12)}
 .voice-input-status[data-state="error"]{color:var(--red)}
 .voice-input-status[data-state="error"]:before{background:var(--red)}
+.voice-input-status[data-state="unavailable"]{color:var(--muted)}
+.voice-input-status[data-state="unavailable"]:before{background:var(--green)}
 .voice-retry{margin-left:auto;border:0;background:transparent;color:var(--green);font:800 10px var(--sans);text-transform:uppercase;letter-spacing:.08em;cursor:pointer}
 .lesson-header-actions{display:flex;align-items:flex-start;gap:12px}
 .voice-playback-controls{display:grid;grid-template-columns:repeat(4,auto);gap:6px;align-items:center}

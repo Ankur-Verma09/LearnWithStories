@@ -421,6 +421,43 @@ Build command:  empty
 Deploy command: npx wrangler deploy
 ```
 
+#### Publish changes to the production Worker
+
+The Pages address redirects to the production Worker. A successful GitHub/Pages build therefore does **not** update the live Worker by itself. After testing and merging changes into `main`, run this sequence from PowerShell on the Dell:
+
+```powershell
+Set-Location "E:\LearnWithStories"
+
+git switch main
+git status
+git push origin main
+
+npx.cmd wrangler --version
+npx.cmd wrangler whoami
+npx.cmd wrangler deploy --dry-run
+npx.cmd wrangler deploy
+```
+
+If `wrangler whoami` says that you are not authenticated, run this once and complete the browser login:
+
+```powershell
+npx.cmd wrangler login
+```
+
+The final deployment output must show:
+
+- `Uploaded learn-with-stories`
+- `Deployed learn-with-stories triggers`
+- the production URL and a new `Current Version ID`
+
+Then open the production portal and use `Ctrl+F5` once to bypass any browser-cached assets:
+
+```text
+https://learn-with-stories.aaankurankur.workers.dev
+```
+
+Run `wrangler deploy` after changes to `web/`, `cloudflare/worker.js`, or `wrangler.jsonc`. It is not required after a normal Dell restart or for backend-only changes under `src/`; rebuild/restart Docker for those backend changes instead.
+
 ### Cloudflare Step 4: Require authentication
 
 Protect all Worker traffic with Cloudflare Access and an allow policy restricted to approved email addresses. Do not create an anonymous bypass or `Allow everyone` policy.
@@ -575,10 +612,14 @@ docker compose up -d --build
 
 ```powershell
 Set-Location "E:\LearnWithStories"
+git switch main
+git push origin main
+npx.cmd wrangler whoami
+npx.cmd wrangler deploy --dry-run
 npx.cmd wrangler deploy
 ```
 
-Deployment is not required after an ordinary PC restart.
+GitHub/Pages deployment alone is not sufficient because the Pages address redirects to the Worker. Deployment is not required after an ordinary PC restart.
 
 ### Stop cleanly
 
@@ -664,8 +705,8 @@ Do not back up `secrets` to an unencrypted or shared location. Start the applica
 | SQLite disk I/O error in Docker | Confirm `E:\LearnWithStories\data` is writable and shared with Docker Desktop; do not run native and Docker instances together. |
 | Topic has no approved evidence | Upload or approve relevant content under the matching subject/topic hierarchy. |
 | Microphone is blocked or denied | Open the browser's site permissions for the portal, allow Microphone, reload the page, and select the microphone again. |
-| Voice input is unavailable | Use a current Chrome or Edge release over HTTPS or localhost, confirm Windows detects the microphone, and type the question as a fallback. |
-| Voice input reports a network error | The browser's recognition service may require Internet access. Retry when connected or type the question. |
+| Voice input is unavailable | Use a current Chrome or Edge release over HTTPS or localhost, confirm Windows detects the microphone, and ensure Internet access is available. Browser recognition may use an external online service, so type the question if it remains unavailable. Story playback can still work through the browser's speech-synthesis capability. |
+| Docker logs show `/.well-known/appspecific/com.chrome.devtools.json` | This is an automatic Chrome DevTools probe, not an application API request. The server returns an empty `204` response and no action is required. |
 | Story playback does not start | Select **Play Story** directly, confirm the tab/site is allowed to play audio, check the Windows output device, and retry. |
 
 To identify the process using port `8766` without stopping it:

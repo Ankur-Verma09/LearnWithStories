@@ -135,6 +135,15 @@ class TutorWebApplication:
             def do_GET(self) -> None:
                 parsed_url = urlparse(self.path)
                 path = parsed_url.path
+                if path == "/.well-known/appspecific/com.chrome.devtools.json":
+                    # Chrome DevTools probes localhost for optional workspace metadata.
+                    # Returning an empty response keeps this browser-generated request
+                    # out of the server's 404/error output.
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
                 if path == "/api/config":
                     self.send_json(HTTPStatus.OK, {
                         "api_version": 5,

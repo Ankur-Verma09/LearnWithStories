@@ -5,7 +5,7 @@
   const ERROR_MESSAGES = {
     "no-speech": "No speech was detected. Move closer to the microphone and retry.",
     "audio-capture": "The microphone could not capture audio. Check the device and retry.",
-    network: "Speech recognition could not reach the browser's recognition service. Check the connection and retry.",
+    network: "Voice typing is unavailable in this browser session because its online recognition service could not be reached. Type your question, or retry in current Chrome or Edge with Internet access.",
     "not-allowed": "Microphone permission is denied or blocked for this site.",
     "service-not-allowed": "Speech recognition is blocked by this browser or device policy.",
     "language-not-supported": "Speech recognition does not support the selected language on this browser.",
