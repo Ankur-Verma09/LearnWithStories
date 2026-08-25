@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from story_tutor.auth import hash_password, verify_password
+from story_tutor.auth import hash_password, new_session_values, session_cookie, verify_password
 from story_tutor.db import Database
 from story_tutor.exams import ExamRequest
 
@@ -28,6 +28,22 @@ class AuthenticationAndOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(admin["roles"], ["ADMIN", "STUDENT"])
         self.assertFalse(self.database.bootstrap_required())
+
+    def test_server_session_resolves_roles_and_logout_revokes_it(self):
+        account = self.database.create_user(
+            "roles@example.com", "Role holder", hash_password("SecurePass123"), ["ADMIN", "STUDENT"], bootstrap=True,
+        )
+        token, token_hash, csrf, expires = new_session_values()
+        self.database.create_session(account["id"], token_hash, csrf, expires)
+        authenticated = self.database.session_user(token_hash)
+        self.assertEqual(authenticated["roles"], ["ADMIN", "STUDENT"])
+        self.assertEqual(authenticated["csrf_token"], csrf)
+        self.database.revoke_session(token_hash)
+        self.assertIsNone(self.database.session_user(token_hash))
+        self.assertIn("HttpOnly", session_cookie(token, secure=True))
+        deleted = session_cookie(token, secure=True, delete=True)
+        self.assertIn("Max-Age=0", deleted)
+        self.assertIn("Expires=Thu, 01 Jan 1970", deleted)
 
     def test_student_can_change_own_manual_context_but_not_model_context(self):
         admin = self.database.create_user(
@@ -103,6 +119,8 @@ class RoleUiAndApiContractTests(unittest.TestCase):
         self.assertNotIn("The model PC is offline", html)
         self.assertIn("X-LWS-CSRF", js)
         self.assertNotIn('responseHeaders.delete("set-cookie")', worker)
+        self.assertIn('headers.set("x-forwarded-proto", incoming.protocol.slice(0, -1))', worker)
+        self.assertIn("Protected session active", js)
 
 
 if __name__ == "__main__":

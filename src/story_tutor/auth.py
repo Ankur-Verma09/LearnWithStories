@@ -94,5 +94,7 @@ def session_cookie(token: str, *, secure: bool = False, delete: bool = False) ->
     value = f"{SESSION_COOKIE}={'' if delete else token}; Path=/; HttpOnly; SameSite=Strict"
     if secure:
         value += "; Secure"
-    value += "; Max-Age=0" if delete else "; Max-Age=1209600"
+    # Max-Age handles modern browsers; Expires makes deletion reliable in older
+    # browsers and intermediary clients after a user signs out.
+    value += "; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT" if delete else "; Max-Age=1209600"
     return value

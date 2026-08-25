@@ -83,6 +83,9 @@ async function proxyApi(request, env) {
   ]) {
     headers.delete(name);
   }
+  // This header is created by the trusted edge, not passed through from a
+  // browser. The Dell service uses it to mark production session cookies Secure.
+  headers.set("x-forwarded-proto", incoming.protocol.slice(0, -1));
   const init = { method: request.method, headers, redirect: "manual" };
   if (request.method !== "GET" && request.method !== "HEAD") {
     init.body = request.body;
