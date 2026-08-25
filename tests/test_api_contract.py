@@ -1,15 +1,31 @@
 import unittest
 from pathlib import Path
 
+from story_tutor.web_server import LibraryReadCache
+
 
 SERVER = (Path(__file__).parents[1] / "src/story_tutor/web_server.py").read_text(encoding="utf-8")
 
 
 class HierarchyApiContractTests(unittest.TestCase):
+    def test_library_cache_reuses_data_and_can_be_invalidated(self):
+        cache = LibraryReadCache()
+        calls: list[int] = []
+        self.assertEqual(cache.get("catalog", lambda: calls.append(1) or ["first"]), ["first"])
+        self.assertEqual(cache.get("catalog", lambda: calls.append(2) or ["second"]), ["first"])
+        cache.invalidate()
+        self.assertEqual(cache.get("catalog", lambda: calls.append(3) or ["third"]), ["third"])
+        self.assertEqual(calls, [1, 3])
+
     def test_hierarchy_search_filters_and_manual_entry_routes_exist(self):
-        for marker in ('/api/library/hierarchy', 'query.get("search"', 'query.get("subject"',
+        for marker in ('/api/library/hierarchy', '/api/library/snapshot', 'query.get("search"', 'query.get("subject"',
                        'query.get("document_id"', '/api/topics/manual'):
             self.assertIn(marker, SERVER)
+
+    def test_library_reads_are_cached_and_invalidated_after_writes(self):
+        self.assertIn("class LibraryReadCache", SERVER)
+        self.assertIn("def invalidate_library_cache", SERVER)
+        self.assertGreaterEqual(SERVER.count("application.invalidate_library_cache()"), 6)
 
     def test_review_and_reprocess_routes_exist(self):
         self.assertIn("def do_PATCH", SERVER)

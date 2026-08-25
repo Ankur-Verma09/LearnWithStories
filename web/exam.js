@@ -6,7 +6,7 @@ const examSubmissionKey=()=>globalThis.crypto?.randomUUID?.()||`exam-${Date.now(
 
 async function loadExamCatalog(){
   try{
-    examState.catalog=await api('/api/catalog');
+    examState.catalog=state.catalog.length?state.catalog:await api('/api/catalog');
     const options='<option value="">Select a subject</option>'+examState.catalog.map(item=>`<option value="${escapeHtml(item.subject)}">${escapeHtml(item.subject)} (${item.topics.length} topics)</option>`).join('');
     examEl('examSubject').innerHTML=options;
     examEl('examSubjectChecks').innerHTML=examState.catalog.map((item,index)=>`<label><input type="checkbox" value="${escapeHtml(item.subject)}" ${index<2?'checked':''}><span>${escapeHtml(item.subject)}</span><small>${item.topics.length} topics</small></label>`).join('');

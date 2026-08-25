@@ -383,6 +383,24 @@ class Database:
             for name, definition in additions.items():
                 if name not in chunk_columns:
                     connection.execute(f"ALTER TABLE source_chunks ADD COLUMN {name} {definition}")
+            # These indexes support the public catalog and administrator library without
+            # repeatedly scanning every extracted chunk as the collection grows.
+            connection.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_source_chunks_source_concept
+                  ON source_chunks(source_id, concept COLLATE NOCASE);
+                CREATE INDEX IF NOT EXISTS idx_source_chunks_topic_id
+                  ON source_chunks(topic_id);
+                CREATE INDEX IF NOT EXISTS idx_source_chunks_subtopic_id
+                  ON source_chunks(subtopic_id);
+                CREATE INDEX IF NOT EXISTS idx_source_chunks_catalog_key
+                  ON source_chunks(
+                    lower(subject),
+                    lower(trim(CASE WHEN subtopic<>'' THEN subtopic WHEN topic<>'' THEN topic ELSE concept END)),
+                    source_id
+                  );
+                CREATE INDEX IF NOT EXISTS idx_topic_nodes_parent
+                  ON topic_nodes(parent_id);
+            """)
             connection.execute("UPDATE source_chunks SET topic=concept WHERE topic='' ")
             connection.execute("UPDATE source_chunks SET chapter=section WHERE chapter='' ")
             node_columns = {row["name"] for row in connection.execute("PRAGMA table_info(topic_nodes)")}
@@ -664,11 +682,28 @@ class Database:
             if document_id: where.append("n.document_id=?"); params.append(document_id)
             if search: where.append("n.normalized_name LIKE ?"); params.append(f"%{normalized_name(search)}%")
             clause = " WHERE " + " AND ".join(where) if where else ""
-            rows = [dict(r) for r in connection.execute(f"""SELECT n.*,COALESCE(NULLIF(d.subject,''),n.subject) AS subject,d.title AS book,
-              (SELECT COUNT(*) FROM topic_nodes c WHERE c.parent_id=n.id) AS child_count,
-              (SELECT COUNT(*) FROM source_chunks s WHERE s.topic_id=n.id OR s.subtopic_id=n.id) AS concept_count
-              FROM topic_nodes n LEFT JOIN source_documents d ON d.id=n.document_id{clause}
-              ORDER BY d.subject COLLATE NOCASE,d.title COLLATE NOCASE,n.page_start,n.display_name COLLATE NOCASE""", params)]
+            # Aggregate once. The old scalar subqueries scanned source_chunks for every
+            # node, which made the library slower with every uploaded book.
+            rows = [dict(r) for r in connection.execute(f"""
+              WITH child_counts AS (
+                SELECT parent_id AS node_id, COUNT(*) AS child_count
+                FROM topic_nodes GROUP BY parent_id
+              ), chunk_links AS (
+                SELECT id, topic_id AS node_id FROM source_chunks WHERE topic_id<>''
+                UNION
+                SELECT id, subtopic_id AS node_id FROM source_chunks WHERE subtopic_id<>''
+              ), chunk_counts AS (
+                SELECT node_id, COUNT(*) AS concept_count FROM chunk_links GROUP BY node_id
+              )
+              SELECT n.*,COALESCE(NULLIF(d.subject,''),n.subject) AS subject,d.title AS book,
+                COALESCE(cc.child_count,0) AS child_count,
+                COALESCE(sc.concept_count,0) AS concept_count
+              FROM topic_nodes n
+              LEFT JOIN source_documents d ON d.id=n.document_id
+              LEFT JOIN child_counts cc ON cc.node_id=n.id
+              LEFT JOIN chunk_counts sc ON sc.node_id=n.id{clause}
+              ORDER BY d.subject COLLATE NOCASE,d.title COLLATE NOCASE,n.page_start,n.display_name COLLATE NOCASE
+            """, params)]
             docs = [dict(r) for r in connection.execute("SELECT id,subject,title,status,records FROM source_documents ORDER BY subject,title")]
         return {"mode": "matches" if search else "tree", "nodes": rows, "documents": docs}
 
@@ -1104,11 +1139,18 @@ class Database:
                           records,error_message,created_at,jsonl_path
                    FROM source_documents ORDER BY id DESC"""
             ).fetchall()]
+            source_ids = [str(document["source_id"]) for document in documents if document["source_id"]]
+            topics_by_source: dict[str, list[str]] = {source_id: [] for source_id in source_ids}
+            if source_ids:
+                placeholders = ",".join("?" for _ in source_ids)
+                for row in connection.execute(
+                    f"""SELECT source_id,concept FROM source_chunks
+                        WHERE source_id IN ({placeholders})
+                        GROUP BY source_id,concept ORDER BY source_id,concept COLLATE NOCASE""", source_ids,
+                ).fetchall():
+                    topics_by_source[str(row["source_id"])].append(str(row["concept"]))
             for document in documents:
-                document["topics"] = [row["concept"] for row in connection.execute(
-                    "SELECT DISTINCT concept FROM source_chunks WHERE source_id=? ORDER BY concept COLLATE NOCASE",
-                    (document["source_id"],),
-                ).fetchall()] if document["source_id"] else []
+                document["topics"] = topics_by_source.get(str(document["source_id"]), [])
             return documents
 
     def document(self, document_id: int) -> dict[str, Any] | None:

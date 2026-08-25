@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -9,7 +10,8 @@ import re
 import socket
 import sqlite3
 import threading
-from typing import Any
+import time
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 import uuid
 
@@ -49,6 +51,34 @@ class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+class LibraryReadCache:
+    """Small process-local read cache invalidated by every library write."""
+
+    def __init__(self, max_entries: int = 32, ttl_seconds: float = 60.0) -> None:
+        self._lock = threading.RLock()
+        self._values: OrderedDict[object, tuple[float, Any]] = OrderedDict()
+        self._max_entries = max_entries
+        self._ttl_seconds = ttl_seconds
+
+    def get(self, key: object, loader: Callable[[], Any]) -> Any:
+        with self._lock:
+            cached = self._values.get(key)
+            now = time.monotonic()
+            if cached is not None and now - cached[0] < self._ttl_seconds:
+                self._values.move_to_end(key)
+                return cached[1]
+            value = loader()
+            self._values[key] = (now, value)
+            self._values.move_to_end(key)
+            while len(self._values) > self._max_entries:
+                self._values.popitem(last=False)
+            return value
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._values.clear()
+
+
 class TutorWebApplication:
     def __init__(self, settings: Settings, static_dir: Path):
         self.settings = settings
@@ -59,8 +89,9 @@ class TutorWebApplication:
         self.exams = ExamService(settings, self.database)
         self.generation_lock = threading.Lock()
         self.upload_lock = threading.Lock()
+        self.library_cache = LibraryReadCache()
 
-    def document_inventory(self) -> list[dict[str, Any]]:
+    def _document_inventory(self) -> list[dict[str, Any]]:
         registered = self.database.documents()
         known = {
             Path(item[key]).resolve()
@@ -88,6 +119,27 @@ class TutorWebApplication:
                     "This document could not be processed. Review it and try again.",
                 )
         return registered + discovered
+
+    def document_inventory(self) -> list[dict[str, Any]]:
+        return self.library_cache.get("documents", self._document_inventory)
+
+    def catalog(self) -> list[dict[str, Any]]:
+        return self.library_cache.get("catalog", self.database.catalog)
+
+    def library_hierarchy(self, search: str = "", subject: str = "", document_id: int = 0) -> dict[str, Any]:
+        key = ("hierarchy", search.casefold(), subject.casefold(), document_id)
+        return self.library_cache.get(
+            key, lambda: self.database.library_hierarchy(search=search, subject=subject, document_id=document_id),
+        )
+
+    def library_snapshot(self) -> dict[str, Any]:
+        return {
+            "documents": self.document_inventory(),
+            "hierarchy": self.library_hierarchy(),
+        }
+
+    def invalidate_library_cache(self) -> None:
+        self.library_cache.invalidate()
 
     def handler(self):
         application = self
@@ -281,7 +333,7 @@ class TutorWebApplication:
                     self.send_json(HTTPStatus.OK, application.database.content_inventory())
                     return
                 if path == "/api/catalog":
-                    self.send_json(HTTPStatus.OK, application.database.catalog())
+                    self.send_json(HTTPStatus.OK, application.catalog())
                     return
                 if path == "/api/documents":
                     if not self.require_admin(user): return
@@ -290,9 +342,13 @@ class TutorWebApplication:
                 if path == "/api/library/hierarchy":
                     if not self.require_admin(user): return
                     query = parse_qs(parsed_url.query)
-                    self.send_json(HTTPStatus.OK, application.database.library_hierarchy(
+                    self.send_json(HTTPStatus.OK, application.library_hierarchy(
                         search=query.get("search", [""])[0], subject=query.get("subject", [""])[0],
                         document_id=int(query.get("document_id", ["0"])[0] or 0)))
+                    return
+                if path == "/api/library/snapshot":
+                    if not self.require_admin(user): return
+                    self.send_json(HTTPStatus.OK, application.library_snapshot())
                     return
                 if path == "/api/memories":
                     self.send_json(HTTPStatus.OK, application.database.memory_inventory(
@@ -451,6 +507,7 @@ class TutorWebApplication:
                         topic = application.database.create_manual_topic(
                             str(payload.get("subject", "")), str(payload.get("name", "")),
                             int(payload.get("document_id", 0) or 0), str(payload.get("parent_id", "")))
+                        application.invalidate_library_cache()
                         self.send_json(HTTPStatus.CREATED, topic)
                         return
                     if path.startswith("/api/documents/") and path.endswith("/reprocess"):
@@ -461,6 +518,7 @@ class TutorWebApplication:
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Book not found"}); return
                         source_path = Path(document["stored_path"])
                         if not source_path.exists(): raise ValueError("The original book file is no longer available")
+                        application.invalidate_library_cache()
                         application.database.update_document(document_id, status="PROCESSING")
                         application.database.prepare_reprocess(document_id)
                         output, records = convert_document(source_path, Path("data/sources/generated"), {
@@ -470,6 +528,7 @@ class TutorWebApplication:
                         }, source_id=document["source_id"])
                         inserted, skipped = application.database.ingest(records)
                         application.database.update_document(document_id, status="READY", jsonl_path=str(output), records=len(records))
+                        application.invalidate_library_cache()
                         self.send_json(HTTPStatus.OK, {"status":"READY","records":len(records),"inserted":inserted,"preserved":skipped})
                         return
                     if path == "/api/lesson":
@@ -605,6 +664,7 @@ class TutorWebApplication:
                     payload = self.read_json()
                     updated = application.database.update_topic(parts[2], str(payload.get("action", "")), payload)
                     if updated is None: self.send_json(HTTPStatus.NOT_FOUND, {"message":"Topic not found"}); return
+                    application.invalidate_library_cache()
                     self.send_json(HTTPStatus.OK, updated)
                 except json.JSONDecodeError:
                     self.send_json(HTTPStatus.BAD_REQUEST, {"status":"INVALID_REQUEST","message":"The request contained invalid JSON."})
@@ -645,6 +705,7 @@ class TutorWebApplication:
                         if document is None:
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Book not found"})
                             return
+                        application.invalidate_library_cache()
                         allowed_root = Path("data/sources").resolve()
                         for key in ("stored_path", "jsonl_path"):
                             candidate = Path(document.get(key, ""))
@@ -665,6 +726,7 @@ class TutorWebApplication:
                         if deleted == 0:
                             self.send_json(HTTPStatus.NOT_FOUND, {"message": "Topic not found in this book"})
                             return
+                        application.invalidate_library_cache()
                         self.send_json(HTTPStatus.OK, {"status": "DELETED", "message": f"{concept} was removed from this book only."})
                         return
                     self.send_json(HTTPStatus.NOT_FOUND, {"message": "Endpoint not found"})
@@ -747,6 +809,8 @@ class TutorWebApplication:
                     print(f"UPLOAD ERROR {type(error).__name__}: {error}")
                     self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"status": "UPLOAD_FAILED", "message": "The document could not be processed. Check the server window for details."})
                 finally:
+                    if document_id is not None:
+                        application.invalidate_library_cache()
                     application.upload_lock.release()
 
         return Handler

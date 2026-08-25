@@ -551,6 +551,12 @@ docker compose ps
 
 Use `docker compose up -d --build` only after application code, Python dependencies, the Dockerfile, or the image configuration changes.
 
+### Library performance
+
+The portal caches the subject catalog, document list, and collapsed Knowledge Library hierarchy in the Dell application. The cache is cleared automatically after a book upload, reprocessing operation, deletion, or topic correction, and expires after one minute for external command-line changes, so no manual cache-clearing step is needed. The library loads only when an administrator opens it; service-health checks also run after the portal is visible, rather than delaying the initial screen.
+
+If a large library is slow immediately after a Docker restart, open the **Knowledge library** once and allow the first load to complete. Later reads reuse the in-memory cache until a library change is made. Keep `E:\LearnWithStories\data` on a fast local SSD; do not place the active SQLite database in a cloud-synced folder or network drive.
+
 ### Startup Step 3: Verify the tunnel
 
 ```powershell
