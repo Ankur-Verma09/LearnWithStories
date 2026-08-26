@@ -204,6 +204,7 @@ class ExamService:
                 raise ValueError(f"No approved evidence is available in {allocation['subject']}{focus}")
             valid_ids = {item["evidence_id"] for item in evidence}
             questions: list[dict[str, Any]] = []
+                        stall_attempts = 0
             while len(questions) < allocation["question_count"]:
                 batch_count = min(10, allocation["question_count"] - len(questions))
                 generation_input = {
@@ -216,8 +217,14 @@ class ExamService:
                 }
                 draft = self.model.chat_json(EXAM_GENERATE_SYSTEM, json.dumps(generation_input, ensure_ascii=False),
                                              temperature=0.25, max_tokens=min(4600, 700 + batch_count * 350))
-                batch = self._validate_questions(draft.get("questions"), valid_ids, batch_count,
+                batch = self._validate_questions(draft.get("questions"), valid_ids,
                                                  seen | {normalized_question(item["question"]) for item in questions})
+                if not batch:
+                    stall_attempts += 1
+                    if stall_attempts >= 5:
+                        raise ValueError("The model could not produce enough unique questions from the supplied evidence")
+                    continue
+                stall_attempts = 0
                 verification = self.model.chat_json(
                     EXAM_VERIFY_SYSTEM,
                     json.dumps({"evidence": evidence, "candidate_questions": batch}, ensure_ascii=False),
@@ -227,7 +234,7 @@ class ExamService:
                     issues = verification.get("issues", [])
                     detail = "; ".join(clean_text(item, 200) for item in issues[:3]) if isinstance(issues, list) else "verification failed"
                     raise ValueError(f"Generated questions were withheld by the factual review gate: {detail}")
-                questions.extend(batch)
+                questions.extend(batch[: allocation["question_count"] - len(questions)])
             base_seconds, extra_seconds = divmod(allocation["time_seconds"], allocation["question_count"])
             for question_index, question in enumerate(questions):
                 evidence_row = next(item for item in evidence if item["evidence_id"] == question["evidence_id"])

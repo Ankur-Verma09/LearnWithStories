@@ -56,9 +56,12 @@ class Settings:
         learner_age = int(raw.get("default_learner_age", level))
         if not 5 <= learner_age <= 100:
             raise ValueError("default_learner_age must be between 5 and 100")
+        # provider = env_or("LLM_PROVIDER", raw.get("model_provider", "ollama")).lower()
+        # if provider not in {"ollama", "openai"}:
+        #     raise ValueError("model_provider must be 'ollama' or 'openai'")
         provider = env_or("LLM_PROVIDER", raw.get("model_provider", "ollama")).lower()
-        if provider not in {"ollama", "openai"}:
-            raise ValueError("model_provider must be 'ollama' or 'openai'")
+        if provider not in {"ollama", "openai", "openai_compat"}:
+            raise ValueError("model_provider must be 'ollama', 'openai', or 'openai_compat'")
         knowledge_level = str(raw.get("default_knowledge_level", "beginner")).strip().lower()
         if knowledge_level not in {"beginner", "intermediate", "advanced"}:
             raise ValueError("default_knowledge_level must be beginner, intermediate, or advanced")
@@ -74,8 +77,10 @@ class Settings:
         retries = int(env_or("LLM_MAX_RETRIES", raw.get("model_max_retries", 1)))
         if not 0 <= retries <= 3:
             raise ValueError("model_max_retries must be between 0 and 3")
+        # configured_key = str(raw.get("model_api_key", "")).strip()
+        # if provider == "openai":
         configured_key = str(raw.get("model_api_key", "")).strip()
-        if provider == "openai":
+        if provider in {"openai", "openai_compat"}:
             candidates = [os.environ.get("OPENAI_API_KEY", "").strip()]
             candidates.extend(part.strip() for part in os.environ.get("OPENAI_API_KEYS", "").replace("\r", "\n").replace(";", "\n").replace(",", "\n").split("\n"))
             keys_file = os.environ.get("OPENAI_API_KEYS_FILE", "").strip()

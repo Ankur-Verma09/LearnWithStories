@@ -1,0 +1,15 @@
+{
+  "model_provider": "openai",
+  "model_base_url": "https://api.openai.com/v1",
+  "model_name": "gpt-5-mini",
+  "model_api_key": "",
+  "request_timeout_seconds": 180,
+  "database_path": "data/story_tutor.db",
+  "max_evidence_chunks": 5,
+  "max_evidence_tokens": 3000,
+  "max_memory_tokens": 600,
+  "max_session_summary_tokens": 300,
+  "default_understanding_level": 18,
+  "default_language": "English"
+}
+

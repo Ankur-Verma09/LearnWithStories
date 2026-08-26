@@ -220,8 +220,45 @@ class OpenAIClient(LLMProvider):
         }
         return parsed
 
+class OpenAICompatClient(OpenAIClient):
+    """OpenAI Chat-Completions-compatible dialect: DeepSeek, HF Inference, local vLLM/TGI, etc."""
 
-PROVIDERS: dict[str, type[LLMProvider]] = {"ollama": OllamaClient, "openai": OpenAIClient}
+    def health(self) -> dict[str, Any]:
+        self._request("/models", payload=None, method="GET")
+        return {"models": [{"name": self.settings.model_name}]}
+
+    def chat_json(self, system: str, user: str, temperature: float, max_tokens: int) -> dict[str, Any]:
+        started = time.perf_counter()
+        payload = {
+            "model": self.settings.model_name,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user + "\n\nReturn only one valid JSON object."},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        result = self._request("/chat/completions", payload)
+        try:
+            content = result["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+            raise ModelError("Model returned invalid structured JSON") from error
+        if not isinstance(parsed, dict):
+            raise ModelError("Model JSON response must be an object")
+        usage = result.get("usage", {}) or {}
+        self.last_call_metrics = {
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "prompt_tokens": int(usage.get("prompt_tokens", max(1, len(system + user) // 4))),
+            "output_tokens": int(usage.get("completion_tokens", max(1, len(content) // 4))),
+            "retry_count": self._last_transport_retries,
+        }
+        return parsed
+
+
+# PROVIDERS: dict[str, type[LLMProvider]] = {"ollama": OllamaClient, "openai": OpenAIClient}
+PROVIDERS: dict[str, type[LLMProvider]] = {"ollama": OllamaClient, "openai": OpenAIClient, "openai_compat": OpenAICompatClient}
 
 
 def create_model_client(settings: Settings) -> LLMProvider:
