@@ -42,7 +42,7 @@ def public_model_error(error: ModelError, provider: str) -> str:
         return "OpenAI rate or usage capacity is unavailable. Wait for the limit to reset and try again."
     if "invalid structured JSON" in message or "JSON response must be an object" in message:
         return "The model returned an invalid response. Retry the request; no unverified content was shown."
-    label = "OpenAI" if provider == "openai" else "The local model"
+    label = "OpenAI" if provider == "openai" else "The configured model service" if provider == "openai_compat" else "The local model"
     return f"{label} is unavailable. Review Setup & health and try again."
 
 
@@ -73,10 +73,19 @@ class LLMProvider(ABC):
                     error_code = error_body.get("code", "") or error_body.get("type", "")
                 except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
                     detail, error_code = "", ""
+                retry_after_header = error.headers.get("Retry-After", "")
+                if error.code == 429 and attempt < self.settings.model_max_retries:
+                    self._last_transport_retries += 1
+                    try:
+                        wait_seconds = min(20, max(1, float(retry_after_header)))
+                    except ValueError:
+                        wait_seconds = 3 * (attempt + 1)
+                    time.sleep(wait_seconds)
+                    continue
                 if 500 <= error.code <= 599 and attempt < self.settings.model_max_retries:
                     self._last_transport_retries += 1
                     continue
-                raise ModelHTTPError(error.code, detail, str(error_code), error.headers.get("Retry-After", "")) from error
+                raise ModelHTTPError(error.code, detail, str(error_code), retry_after_header) from error
             except (urllib.error.URLError, TimeoutError) as error:
                 if attempt < self.settings.model_max_retries:
                     self._last_transport_retries += 1

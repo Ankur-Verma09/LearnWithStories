@@ -26,10 +26,12 @@ class Retriever:
         exact = [row for row in candidates if selected_topic and selected_topic in {
             " ".join(str(row[field] or "").split()).casefold() for field in ("concept", "topic", "subtopic", "chapter")
         }]
-        # For the first agent slice, exact concept boundaries are safer than
-        # silently mixing related concepts. Prerequisites will later be linked
-        # through an explicit syllabus graph rather than lexical coincidence.
-        if selected_topic:
+        # Prefer an exact concept-boundary match when one exists, to avoid
+        # silently mixing related concepts. If nothing matches exactly,
+        # fall back to keyword scoring across the whole subject instead of
+        # returning nothing — ingestion-derived labels don't always match
+        # user-typed topic wording exactly.
+        if selected_topic and exact:
             candidates = exact
         for row in candidates:
             title_terms = terms(f"{row['concept']} {row['section']} {row['title']}")

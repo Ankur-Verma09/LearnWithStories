@@ -161,9 +161,11 @@ class ExamService:
         return evidence
 
     @staticmethod
-    def _validate_questions(raw: Any, valid_ids: set[str], expected: int, existing: set[str]) -> list[dict[str, Any]]:
-        if not isinstance(raw, list) or len(raw) != expected:
-            raise ValueError(f"The model must return exactly {expected} questions")
+    def _validate_questions(raw: Any, valid_ids: set[str], existing: set[str]) -> list[dict[str, Any]]:
+        if raw is None or raw == []:
+            return []  # Model produced nothing this round; caller retries rather than aborting.
+        if not isinstance(raw, list):
+            raise ValueError("The model returned questions in an unexpected format")
         accepted: list[dict[str, Any]] = []
         local_seen: set[str] = set()
         for item in raw:
@@ -172,21 +174,32 @@ class ExamService:
             question = clean_text(item.get("question"), 1000)
             key = normalized_question(question)
             options = item.get("options")
-            correct = item.get("correct_index")
+            correct_raw = item.get("correct_index")
+            correct: int | None
+            if isinstance(correct_raw, bool):
+                correct = None
+            elif isinstance(correct_raw, int):
+                correct = correct_raw
+            elif isinstance(correct_raw, float) and correct_raw.is_integer():
+                correct = int(correct_raw)
+            elif isinstance(correct_raw, str) and correct_raw.strip().lstrip("-").isdigit():
+                correct = int(correct_raw.strip())
+            else:
+                correct = None
             evidence_id = clean_text(item.get("evidence_id"), 40)
             explanation = clean_text(item.get("explanation"), 2000)
             topic = clean_text(item.get("topic"), 160)
-            if len(key) < 12 or key in existing or key in local_seen:
-                raise ValueError("Generated questions contain a duplicate or invalid question")
             if not isinstance(options, list) or len(options) != 4:
                 raise ValueError("Every question must have exactly four options")
             options = [clean_text(option, 500) for option in options]
             if any(not option for option in options) or len({option.casefold() for option in options}) != 4:
                 raise ValueError("Every question must have four distinct non-empty options")
-            if not isinstance(correct, int) or not 0 <= correct <= 3:
+            if correct is None or not 0 <= correct <= 3:
                 raise ValueError("Every question must have one valid correct answer")
             if evidence_id not in valid_ids or not explanation:
                 raise ValueError("Every question must contain a valid evidence reference and explanation")
+            if len(key) < 12 or key in existing or key in local_seen:
+                continue  # Duplicate or too-short: skip it, don't fail the whole batch.
             accepted.append({"question": question, "options": options, "correct_index": correct,
                              "explanation": explanation, "evidence_id": evidence_id, "topic": topic})
             local_seen.add(key)
@@ -204,9 +217,9 @@ class ExamService:
                 raise ValueError(f"No approved evidence is available in {allocation['subject']}{focus}")
             valid_ids = {item["evidence_id"] for item in evidence}
             questions: list[dict[str, Any]] = []
-                        stall_attempts = 0
+            stall_attempts = 0
             while len(questions) < allocation["question_count"]:
-                batch_count = min(10, allocation["question_count"] - len(questions))
+                batch_count = min(5, allocation["question_count"] - len(questions))
                 generation_input = {
                     "exam_name": request.exam_name, "exam_type": request.exam_type,
                     "target_exam_pattern": EXAM_PATTERNS[request.exam_pattern],
@@ -216,12 +229,13 @@ class ExamService:
                     "evidence": evidence,
                 }
                 draft = self.model.chat_json(EXAM_GENERATE_SYSTEM, json.dumps(generation_input, ensure_ascii=False),
-                                             temperature=0.25, max_tokens=min(4600, 700 + batch_count * 350))
+                                             temperature=0.25, max_tokens=min(4600, 900 + batch_count * 400))
+                print(f"DEBUG exam draft keys={list(draft.keys())} raw={json.dumps(draft, ensure_ascii=False)[:1500]}")
                 batch = self._validate_questions(draft.get("questions"), valid_ids,
                                                  seen | {normalized_question(item["question"]) for item in questions})
                 if not batch:
                     stall_attempts += 1
-                    if stall_attempts >= 5:
+                    if stall_attempts >= 3:
                         raise ValueError("The model could not produce enough unique questions from the supplied evidence")
                     continue
                 stall_attempts = 0

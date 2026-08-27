@@ -133,7 +133,7 @@ class PromptAndSchemaTests(unittest.TestCase):
 
 class ProviderConfigurationTests(unittest.TestCase):
     def test_provider_registry_uses_common_contract(self):
-        self.assertEqual(set(PROVIDERS), {"ollama", "openai"})
+        self.assertEqual(set(PROVIDERS), {"ollama", "openai", "openai_compat"})
         self.assertTrue(all(issubclass(provider, LLMProvider) for provider in PROVIDERS.values()))
 
     def test_environment_can_override_local_model_without_code_changes(self):

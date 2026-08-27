@@ -271,7 +271,8 @@ class TutorWebApplication:
                             "features": payload["features"] + ["document_upload", "pdf_conversion", "docx_conversion", "library_management", "user_management"],
                             "model_provider": application.settings.model_provider,
                             "model_name": application.settings.model_name,
-                            "configured_api_keys": len(application.settings.model_api_keys) if application.settings.model_provider == "openai" else 0,
+                            "configured_api_keys": len(application.settings.model_api_keys)
+                            if application.settings.model_provider in {"openai", "openai_compat"} else 0,
                         })
                     self.send_json(HTTPStatus.OK, payload)
                     return

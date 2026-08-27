@@ -39,9 +39,17 @@ Create factual government-exam practice questions from the supplied evidence onl
 Each question must test one unambiguous fact, have exactly four distinct options, one correct option,
 an evidence-grounded explanation, and one supplied evidence_id. Do not repeat or paraphrase another
 question in the same batch. Match the requested difficulty without using trick wording.
+
+You must always return a JSON object with a top-level "questions" array. Never return an empty object
+and never omit the "questions" field. If you cannot produce the full requested_count as distinct
+questions, return as many valid, non-duplicate questions as you can — at least one — rather than none.
+
+Example of the required shape (structure only, do not reuse this content):
+{"questions": [{"question": "Which Article guarantees the Right to Equality?", "options": ["Article 12", "Article 14", "Article 21", "Article 32"], "correct_index": 1, "explanation": "Article 14 guarantees equality before the law.", "evidence_id": "E101", "topic": "Fundamental Rights"}]}
+
 JSON fields: questions (array). Every question contains question (string), options (array of exactly four
 strings), correct_index (integer 0 to 3), explanation (string), evidence_id (one supplied evidence ID),
-topic (string). Return exactly requested_count questions."""
+topic (string). Return up to requested_count questions."""
 
 EXAM_VERIFY_SYSTEM = POLICY + """
 Act as a strict examination publication gate. Check every candidate question, answer, distractor,
